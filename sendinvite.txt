@@ -1,0 +1,373 @@
+-- ─── SERVICES ─────────────────────────────────────────────────────────────────
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+
+local LP = Players.LocalPlayer
+
+-- ─── GUI ROOT ─────────────────────────────────────────────────────────────────
+local root = gethui and gethui() or game:GetService("CoreGui")
+
+local old = root:FindFirstChild("TradeInviteGUI")
+if old then old:Destroy() end
+
+-- ScreenGui
+local sg = Instance.new("ScreenGui")
+sg.Name           = "TradeInviteGUI"
+sg.ResetOnSpawn   = false
+sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+sg.Parent         = root
+
+-- ─── FRAME PRINCIPAL ──────────────────────────────────────────────────────────
+local frame = Instance.new("Frame")
+frame.Name              = "Frame"
+frame.Size              = UDim2.new(0, 320, 0, 200)
+frame.Position          = UDim2.new(0.5, -160, 0.5, -100)
+frame.BackgroundColor3  = Color3.fromRGB(12, 12, 12)
+frame.BorderSizePixel   = 0
+frame.Active            = true
+frame.Draggable         = true
+frame.Parent            = sg
+
+local c1 = Instance.new("UICorner")
+c1.CornerRadius = UDim.new(0, 10)
+c1.Parent = frame
+
+-- Borda externa vermelha
+local stroke = Instance.new("UIStroke")
+stroke.Color     = Color3.fromRGB(180, 20, 20)
+stroke.Thickness = 1.5
+stroke.Parent    = frame
+
+-- ─── BARRA TOPO ───────────────────────────────────────────────────────────────
+local topBar = Instance.new("Frame")
+topBar.Name             = "TopBar"
+topBar.Size             = UDim2.new(1, 0, 0, 42)
+topBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+topBar.BorderSizePixel  = 0
+topBar.Parent           = frame
+
+local c2 = Instance.new("UICorner")
+c2.CornerRadius = UDim.new(0, 10)
+c2.Parent = topBar
+
+-- Correção: quadrar a parte de baixo do topBar
+local fix = Instance.new("Frame")
+fix.Size             = UDim2.new(1, 0, 0, 10)
+fix.Position         = UDim2.new(0, 0, 1, -10)
+fix.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+fix.BorderSizePixel  = 0
+fix.Parent           = topBar
+
+-- Título
+local title = Instance.new("TextLabel")
+title.Size                  = UDim2.new(1, -50, 1, 0)
+title.Position              = UDim2.new(0, 14, 0, 0)
+title.BackgroundTransparency = 1
+title.Text                  = "⚔  Trade Sender"
+title.TextColor3            = Color3.fromRGB(220, 220, 220)
+title.Font                  = Enum.Font.GothamBold
+title.TextSize              = 13
+title.TextXAlignment        = Enum.TextXAlignment.Left
+title.Parent                = topBar
+
+-- Botão fechar
+local closeBtn = Instance.new("TextButton")
+closeBtn.Name              = "CloseBtn"
+closeBtn.Size              = UDim2.new(0, 26, 0, 26)
+closeBtn.Position          = UDim2.new(1, -34, 0.5, -13)
+closeBtn.BackgroundColor3  = Color3.fromRGB(160, 20, 20)
+closeBtn.Text              = "✕"
+closeBtn.TextColor3        = Color3.fromRGB(255, 255, 255)
+closeBtn.Font              = Enum.Font.GothamBold
+closeBtn.TextSize          = 12
+closeBtn.BorderSizePixel   = 0
+closeBtn.Parent            = topBar
+
+local c3 = Instance.new("UICorner")
+c3.CornerRadius = UDim.new(0, 6)
+c3.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+    sg:Destroy()
+end)
+
+-- ─── LABEL ────────────────────────────────────────────────────────────────────
+local lbl = Instance.new("TextLabel")
+lbl.Size                  = UDim2.new(1, -24, 0, 18)
+lbl.Position              = UDim2.new(0, 12, 0, 52)
+lbl.BackgroundTransparency = 1
+lbl.Text                  = "Username do Roblox"
+lbl.TextColor3            = Color3.fromRGB(130, 130, 130)
+lbl.Font                  = Enum.Font.Gotham
+lbl.TextSize              = 11
+lbl.TextXAlignment        = Enum.TextXAlignment.Left
+lbl.Parent                = frame
+
+-- ─── INPUT FRAME ──────────────────────────────────────────────────────────────
+local inputFrame = Instance.new("Frame")
+inputFrame.Name             = "InputFrame"
+inputFrame.Size             = UDim2.new(1, -24, 0, 36)
+inputFrame.Position         = UDim2.new(0, 12, 0, 72)
+inputFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+inputFrame.BorderSizePixel  = 0
+inputFrame.Parent           = frame
+
+local c4 = Instance.new("UICorner")
+c4.CornerRadius = UDim.new(0, 6)
+c4.Parent = inputFrame
+
+local inputStroke = Instance.new("UIStroke")
+inputStroke.Color     = Color3.fromRGB(50, 50, 50)
+inputStroke.Thickness = 1
+inputStroke.Parent    = inputFrame
+
+-- TextBox
+local tb = Instance.new("TextBox")
+tb.Name                 = "TextBox"
+tb.Size                 = UDim2.new(1, -16, 1, 0)
+tb.Position             = UDim2.new(0, 10, 0, 0)
+tb.BackgroundTransparency = 1
+tb.PlaceholderText      = "ex: Builderman"
+tb.PlaceholderColor3    = Color3.fromRGB(70, 70, 70)
+tb.Text                 = ""
+tb.TextColor3           = Color3.fromRGB(230, 230, 230)
+tb.Font                 = Enum.Font.Gotham
+tb.TextSize             = 13
+tb.TextXAlignment       = Enum.TextXAlignment.Left
+tb.ClearTextOnFocus     = false
+tb.Parent               = inputFrame
+
+tb.Focused:Connect(function()
+    TweenService:Create(inputStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(180, 20, 20)}):Play()
+end)
+tb.FocusLost:Connect(function()
+    TweenService:Create(inputStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(50, 50, 50)}):Play()
+end)
+
+-- ─── BOTÃO SEND ───────────────────────────────────────────────────────────────
+local sendBtn = Instance.new("TextButton")
+sendBtn.Name              = "SendBtn"
+sendBtn.Size              = UDim2.new(1, -24, 0, 36)
+sendBtn.Position          = UDim2.new(0, 12, 0, 118)
+sendBtn.BackgroundColor3  = Color3.fromRGB(170, 20, 20)
+sendBtn.Text              = "ENVIAR TRADE"
+sendBtn.TextColor3        = Color3.fromRGB(255, 255, 255)
+sendBtn.Font              = Enum.Font.GothamBold
+sendBtn.TextSize          = 13
+sendBtn.BorderSizePixel   = 0
+sendBtn.AutoButtonColor   = false
+sendBtn.Parent            = frame
+
+local c5 = Instance.new("UICorner")
+c5.CornerRadius = UDim.new(0, 6)
+c5.Parent = sendBtn
+
+sendBtn.MouseEnter:Connect(function()
+    TweenService:Create(sendBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(210, 30, 30)}):Play()
+end)
+sendBtn.MouseLeave:Connect(function()
+    TweenService:Create(sendBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(170, 20, 20)}):Play()
+end)
+
+-- ─── STATUS ───────────────────────────────────────────────────────────────────
+local status = Instance.new("TextLabel")
+status.Name                 = "Status"
+status.Size                 = UDim2.new(1, -24, 0, 16)
+status.Position             = UDim2.new(0, 12, 0, 162)
+status.BackgroundTransparency = 1
+status.Text                 = ""
+status.TextColor3           = Color3.fromRGB(130, 130, 130)
+status.Font                 = Enum.Font.Gotham
+status.TextSize             = 11
+status.TextXAlignment       = Enum.TextXAlignment.Center
+status.Parent               = frame
+
+local function setStatus(msg, r, g, b, duration)
+    status.Text       = msg
+    status.TextColor3 = Color3.fromRGB(r, g, b)
+    if duration then
+        task.delay(duration, function()
+            if status.Text == msg then status.Text = "" end
+        end)
+    end
+end
+
+-- ─── INVITE REMOTE ────────────────────────────────────────────────────────────
+-- Origem: ReplicatedStorage.Controllers.TradeController
+--   linha 43 : local v_u_40 = Net:RemoteFunction("TradeService/Invite")
+--   linha 355: function TradeController.SendInvite(_, userId, onResult)
+--              upvalues: (copy) v_u_40, (copy) v_u_138, (copy) v_u_139
+--   linha 357: v_u_40:InvokeServer("8fbe1594-7cef-4c29-94d1-a0e93adfa5a4", userId)
+-- A remote é lida dos upvalues do próprio módulo; não usamos o pacote Net.
+local INVITE_GUID = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4"
+local SEARCH_GUID = "5bbf0ed7-abce-44dc-aec6-d72992f7e476" -- TradeController:615
+local SEARCH_COOLDOWN = 5 -- o jogo trava a busca por 5s (TradeController:629)
+
+local getupvals = (debug and debug.getupvalues) or getupvalues
+
+local TradeController
+do
+    local ok, mod = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Controllers"):WaitForChild("TradeController"))
+    end)
+    if ok and type(mod) == "table" and type(mod.SendInvite) == "function" then
+        TradeController = mod
+    end
+end
+
+-- Retorna a única RemoteFunction entre os upvalues de fn (nil se houver 0 ou >1).
+local function onlyRemoteFunction(fn)
+    if not getupvals or type(fn) ~= "function" then return nil end
+    local ok, ups = pcall(getupvals, fn)
+    if not ok or type(ups) ~= "table" then return nil end
+    local found
+    for _, v in pairs(ups) do
+        if typeof(v) == "Instance" and v:IsA("RemoteFunction") then
+            if found and found ~= v then return nil end
+            found = v
+        end
+    end
+    return found
+end
+
+local inviteRemote = TradeController and onlyRemoteFunction(TradeController.SendInvite)
+
+-- SearchUser: upvalue nº 12 de _createPlayerList (v_u_39). Essa função tem
+-- 3 RemoteFunctions como upvalue, então aqui vai por índice + validação.
+local searchRemote
+if TradeController and getupvals and type(TradeController._createPlayerList) == "function" then
+    local ok, ups = pcall(getupvals, TradeController._createPlayerList)
+    local v = ok and type(ups) == "table" and ups[12]
+    if typeof(v) == "Instance" and v:IsA("RemoteFunction") and v ~= inviteRemote then
+        -- Nome legível: tem que terminar exatamente em "TradeService/SearchUser".
+        -- Nome sem "/" (ofuscado): aceita pela posição do upvalue.
+        local suffix = "TradeService/SearchUser"
+        if v.Name:sub(-#suffix) == suffix or not v.Name:find("/", 1, true) then
+            searchRemote = v
+        end
+    end
+end
+
+if not inviteRemote then
+    setStatus("✕ Remote não encontrada.", 220, 60, 60)
+end
+
+-- ─── LÓGICA DO BOTÃO ──────────────────────────────────────────────────────────
+local busy = false
+local lastSearch = 0
+
+local function resetBtn()
+    sendBtn.Text   = "ENVIAR TRADE"
+    sendBtn.Active = true
+    busy = false
+end
+
+sendBtn.MouseButton1Click:Connect(function()
+    if busy then return end
+    local name = tb.Text:match("^%s*(.-)%s*$")
+
+    if name == "" then
+        setStatus("⚠ Digite um username!", 220, 80, 80, 3)
+        return
+    end
+
+    if not inviteRemote then
+        setStatus("✕ Remote não encontrada.", 220, 60, 60, 4)
+        return
+    end
+
+    busy = true
+    sendBtn.Text   = "Buscando..."
+    sendBtn.Active = false
+    setStatus("Buscando " .. name .. "...", 130, 130, 130)
+
+    local ok, uid = pcall(function()
+        return Players:GetUserIdFromNameAsync(name)
+    end)
+
+    if not ok or typeof(uid) ~= "number" then
+        setStatus("✕ Jogador não encontrado.", 220, 60, 60, 3)
+        resetBtn()
+        return
+    end
+
+    if uid == LP.UserId then
+        setStatus("✕ Não dá pra mandar trade pra você mesmo.", 220, 60, 60, 3)
+        resetBtn()
+        return
+    end
+
+    -- Mesmas condições do jogo: canInvite e inGame.
+    -- Quem está no servidor: inGame = true, canInvite = true (TradeController:533).
+    -- Quem está fora: pergunta ao servidor via SearchUser (TradeController:615).
+    if not Players:GetPlayerByUserId(uid) then
+        if not searchRemote then
+            setStatus("✕ Jogador fora do servidor (SearchUser não encontrada).", 220, 60, 60, 4)
+            resetBtn()
+            return
+        end
+        local remaining = SEARCH_COOLDOWN - (os.clock() - lastSearch)
+        if remaining > 0 then
+            setStatus(("⏳ Aguarde %.0fs para buscar de novo."):format(remaining), 220, 160, 60, 3)
+            resetBtn()
+            return
+        end
+        lastSearch = os.clock()
+
+        local sOk, found, inGame, canInvite = pcall(function()
+            return searchRemote:InvokeServer(SEARCH_GUID, uid)
+        end)
+        if not (sOk and found) then
+            local msg = typeof(found) == "string" and found
+                or typeof(inGame) == "string" and inGame
+                or "Falha ao buscar jogador."
+            setStatus("✕ " .. msg, 220, 60, 60, 4)
+            resetBtn()
+            return
+        end
+        if not inGame then
+            setStatus("✕ " .. name .. " não está no jogo.", 220, 60, 60, 4)
+            resetBtn()
+            return
+        end
+        if not canInvite then
+            setStatus("✕ " .. name .. " não aceita trades.", 220, 60, 60, 4)
+            resetBtn()
+            return
+        end
+    end
+
+    setStatus("Enviando invite...", 130, 130, 130)
+    sendBtn.Text = "ENVIANDO..."
+
+    -- Resultado final chega por TradeService/InviteResult, que o próprio
+    -- TradeController escuta (Start, linha 2126) e repassa a este callback.
+    local done = false
+    local function onResult(delivered, message)
+        if done then return end
+        done = true
+        if delivered then
+            setStatus("✔ Invite enviado para " .. name, 60, 200, 100, 5)
+        else
+            setStatus("✕ " .. (typeof(message) == "string" and message or "Invite não entregue."), 220, 60, 60, 5)
+        end
+        resetBtn()
+    end
+
+    -- Chama a função do jogo: mesma remote, mesmo GUID, userId como number.
+    local callOk, accepted, err = pcall(TradeController.SendInvite, TradeController, uid, onResult)
+
+    if not callOk then
+        onResult(false, "Falhou ao enviar invite.")
+    elseif not accepted then
+        onResult(false, err)
+    else
+        -- Servidor aceitou o pedido; esperando o InviteResult.
+        task.delay(10, function()
+            if not done then
+                onResult(false, "Sem resposta do servidor.")
+            end
+        end)
+    end
+end)
