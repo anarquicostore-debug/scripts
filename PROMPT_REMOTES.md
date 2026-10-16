@@ -31,6 +31,8 @@ Vou te mandar um dump de scripts do cliente (decompilados) e um script meu com u
 
 9. **Não rode código do jogo a partir da thread do executor.** Alguns jogos varrem `getfenv(1..10)` procurando `cloneref`/`getrenv`/`getupvalues`/`getnamecallmethod` (no Steal a Brainrot: `PlotController.lua:94-117`). Qualquer função do jogo chamada pelo meu script (ex.: `Net:RemoteFunction(...)`, flags, helpers) pode achar o ambiente do executor na pilha e me denunciar. Só leia instâncias/upvalues e chame `InvokeServer`/`FireServer` diretamente. Em hooks, use `task.defer` antes de mexer em GUI ou chamar qualquer coisa.
 
-10. **Diga o que não dá pra confirmar.** Se um módulo necessário não estiver no dump (ex.: `Packages/Net` faltando), diga isso. Não suponha como ele funciona.
+10. **Não dispare handlers do jogo pelo executor.** Rodar a função de um botão/TextBox do jogo via `getconnections` + `task.spawn`/`firesignal` também deu kick no Steal a Brainrot (resgate de código). Se o módulo de rede do jogo (`Packages/Net`) não estiver no dump, não tente adivinhar: peça o dump dele ou um log de remote spy de uma ação feita manualmente. Enquanto isso, a opção segura é só preencher a GUI do jogo e deixar o clique final para o jogador.
 
-11. **Explique na resposta:** de onde veio a remote (arquivo:linha), o GUID, os argumentos, e o que pode quebrar quando o jogo atualizar.
+11. **Diga o que não dá pra confirmar.** Se um módulo necessário não estiver no dump (ex.: `Packages/Net` faltando), diga isso. Não suponha como ele funciona.
+
+12. **Explique na resposta:** de onde veio a remote (arquivo:linha), o GUID, os argumentos, e o que pode quebrar quando o jogo atualizar.

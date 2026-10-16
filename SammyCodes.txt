@@ -16,8 +16,8 @@
 
 	Anti-cheat visto no dump (PlotController.lua:94-117): funções do jogo varrem
 	getfenv(1..10) procurando cloneref/getrenv/getupvalues/getnamecallmethod.
-	Por isso este script NÃO chama funções do jogo (Net, Flags, etc.) a partir da
-	thread do executor: só lê instâncias/upvalues e chama a remote diretamente.
+	Por isso este script NÃO chama funções do jogo nem dispara remotes.
+	O resgate só preenche o menu Codes do jogo; o clique em Confirm é seu.
 ]]
 
 -- ─── SERVICES ─────────────────────────────────────────────────────────────────
@@ -381,160 +381,42 @@ if captureMode == "nenhum" and NotificationController and getupvalues then
     end)
 end
 
--- ─── REDEEM REMOTE ────────────────────────────────────────────────────────────
--- O jogo resolve a remote na hora: Net:RemoteFunction(REDEEM_GUID).
--- Não chamamos Net (ele pode varrer getfenv). Procuramos a instância já existente.
-local redeemRemote = nil
-
-local function isRedeemName(name)
-    return name == REDEEM_GUID or name:sub(-(#REDEEM_GUID + 1)) == "/" .. REDEEM_GUID
-end
-
-local function findRedeemRemote()
-    local packages = ReplicatedStorage:FindFirstChild("Packages")
-    local net = packages and packages:FindFirstChild("Net")
-
-    -- 1) Instância filha do Net com o nome exato (ex.: "RF/<guid>" ou "<guid>")
-    if net then
-        for _, c in ipairs(net:GetDescendants()) do
-            if c:IsA("RemoteFunction") and isRedeemName(c.Name) then
-                return c
-            end
-        end
-    end
-
-    -- 2) Cache interno do Net (só leitura de upvalues, nenhum código do jogo roda)
-    if net and getupvalues then
-        local okReq, Net = pcall(require, net)
-        if okReq and type(Net) == "table" then
-            local seen = {}
-            local function scan(t, depth)
-                if depth > 3 or seen[t] then return nil end
-                seen[t] = true
-                for k, v in pairs(t) do
-                    if typeof(v) == "Instance" and v:IsA("RemoteFunction")
-                        and ((type(k) == "string" and isRedeemName(k)) or isRedeemName(v.Name)) then
-                        return v
-                    elseif type(v) == "table" then
-                        local r = scan(v, depth + 1)
-                        if r then return r end
-                    end
-                end
-                return nil
-            end
-            for _, fname in ipairs({ "RemoteFunction", "Invoke" }) do
-                local f = rawget(Net, fname)
-                if type(f) == "function" then
-                    local okUp, ups = pcall(getupvalues, f)
-                    if okUp then
-                        for _, up in pairs(ups) do
-                            if typeof(up) == "Instance" and up:IsA("RemoteFunction") and isRedeemName(up.Name) then
-                                return up
-                            elseif type(up) == "table" then
-                                local r = scan(up, 1)
-                                if r then return r end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
-redeemRemote = findRedeemRemote()
-
-if not redeemRemote then
-    -- Diagnóstico: lista as RemoteFunctions do Net para ajustar o nome se preciso
-    local net = ReplicatedStorage:FindFirstChild("Packages") and ReplicatedStorage.Packages:FindFirstChild("Net")
-    if net then
-        warn("[Codes] Remote de redeem não encontrada. RemoteFunctions em Packages.Net:")
-        for _, c in ipairs(net:GetDescendants()) do
-            if c:IsA("RemoteFunction") then warn("   ", c:GetFullName()) end
-        end
-    end
-end
-
--- ─── RESGATE PELO PRÓPRIO JOGO ────────────────────────────────────────────────
--- CodesController.lua:13/87/61: PlayerGui.Codes.Codes.CodeRedeem.TextBox
--- tem um FocusLost(enterPressed) que chama submitCode(). Colocamos o código na
--- TextBox do jogo e rodamos esse handler com task.spawn: a thread nova começa
--- direto na função do jogo, então o ambiente do executor não fica na pilha.
+-- ─── RESGATE (modo seguro) ───────────────────────────────────────────────────
+-- Tentativas anteriores:
+--   • InvokeServer direto na RemoteFunction com nome do GUID -> falhou
+--   • task.spawn no handler FocusLost do jogo (getconnections) -> KICK
+-- Sem o código de Packages/Net não dá pra saber o que ele checa, então este
+-- script NÃO dispara o resgate. Ele só coloca o código na TextBox do jogo
+-- (PlayerGui.Codes.Codes.CodeRedeem.TextBox, CodesController.lua:87) e você
+-- clica no botão Confirm do próprio jogo. Assim o fluxo é 100% o do jogo,
+-- iniciado por um clique de verdade.
 local function getGameCodeBox()
     local pg = LP:FindFirstChild("PlayerGui")
     local gui = pg and pg:FindFirstChild("Codes")
     local codes = gui and gui:FindFirstChild("Codes")
     local redeemFrame = codes and codes:FindFirstChild("CodeRedeem")
-    return redeemFrame and redeemFrame:FindFirstChild("TextBox")
+    return redeemFrame and redeemFrame:FindFirstChild("TextBox"), codes
 end
 
-local function getGameSubmitHandler(box)
-    if not (box and getconnections) then return nil end
-    local ok, conns = pcall(getconnections, box.FocusLost)
-    if not ok then return nil end
-    local fallback = nil
-    for _, c in ipairs(conns) do
-        local f = c.Function
-        if type(f) == "function" then
-            fallback = fallback or f
-            -- o handler do jogo tem submitCode (uma função) como upvalue
-            if getupvalues then
-                local okUp, ups = pcall(getupvalues, f)
-                if okUp then
-                    for _, up in pairs(ups) do
-                        if type(up) == "function" then return f end
-                    end
-                end
-            end
+-- Mostra o resultado quando o jogo notificar (Success = #92FF67, Error = #FA0103)
+local function watchResult()
+    if captureMode ~= "hook" then return end
+    local got = false
+    pendingRedeem = function(text)
+        got = true
+        local ok = text:upper():find("92FF67", 1, true) ~= nil
+        if ok then
+            setStatus("✔ " .. stripRich(text), 60, 200, 100, 6)
+        else
+            setStatus("✕ " .. stripRich(text), 220, 60, 60, 6)
         end
     end
-    return fallback
+    task.delay(60, function()
+        if not got then pendingRedeem = nil end
+    end)
 end
-
-local function redeemViaGame(code)
-    local box = getGameCodeBox()
-    local handler = getGameSubmitHandler(box)
-    if not handler then return false end
-    if not box.Active then
-        return true, false, "O jogo ainda está processando outro código."
-    end
-
-    local result = nil
-    pendingRedeem = function(text) result = text end
-
-    box.Text = code
-    task.wait() -- deixa o filtro de texto do jogo rodar
-    if box.Text ~= code then
-        pendingRedeem = nil
-        return true, false, "O jogo alterou o código (" .. box.Text .. ")."
-    end
-    task.spawn(handler, true)
-
-    local t0 = os.clock()
-    while result == nil and os.clock() - t0 < 8 do
-        task.wait(0.05)
-    end
-    pendingRedeem = nil
-
-    if result == nil then
-        if captureMode ~= "hook" then
-            return true, true, "Enviado. Veja a notificação do jogo."
-        end
-        return true, false, "Sem resposta do jogo (timeout)."
-    end
-    -- NotificationController: Success = #92FF67, Error = #FA0103
-    local success = result:upper():find("92FF67", 1, true) ~= nil
-    return true, success, stripRich(result)
-end
-
--- ─── LÓGICA DO RESGATE (igual ao submitCode do CodesController) ─────────────
-local busy = false
 
 local function redeem()
-    if busy then return end
-
     -- mesmo filtro do jogo: só letras/números, até 50 caracteres
     local code = tb.Text:gsub("[^%w]", ""):sub(1, 50)
     if #code < 1 then
@@ -542,58 +424,26 @@ local function redeem()
         return
     end
 
-    -- 1) Caminho preferido: o próprio submitCode do jogo
-    busy = true
-    redeemBtn.Text = "Resgatando..."
-    setStatus("Resgatando " .. code .. " pelo jogo...", 130, 130, 130)
-    local used, gSuccess, gMsg = redeemViaGame(code)
-    if used then
-        print("[Codes] via jogo:", code, gSuccess, gMsg)
-        if gSuccess then
-            setStatus("✔ " .. gMsg, 60, 200, 100, 6)
-            tb.Text = ""
-        else
-            setStatus("✕ " .. gMsg, 220, 60, 60, 6)
-        end
-        task.wait(0.5)
-        redeemBtn.Text = "RESGATAR"
-        busy = false
+    local box, codesFrame = getGameCodeBox()
+    if not box then
+        setStatus("✕ Menu Codes do jogo não encontrado.", 220, 60, 60, 5)
         return
     end
-    busy = false
-
-    -- 2) Fallback: remote direta
-    if not redeemRemote then
-        redeemRemote = findRedeemRemote()
-        if not redeemRemote then
-            setStatus("✕ Remote não encontrada (veja o console F9).", 220, 60, 60, 5)
-            return
-        end
+    if not box.Active then
+        setStatus("⚠ O jogo ainda está processando outro código.", 220, 160, 60, 4)
+        return
     end
 
-    busy = true
-    redeemBtn.Text = "Resgatando..."
-    setStatus("Resgatando " .. code .. "...", 130, 130, 130)
+    box.Text = code
+    if setclipboard then pcall(setclipboard, code) end
+    watchResult()
 
-    local callOk, success, msg = pcall(function()
-        return redeemRemote:InvokeServer(code)
-    end)
-    print("[Codes] remote direta:", redeemRemote:GetFullName(), code, callOk, success, msg)
-
-    if not callOk then
-        setStatus("✕ Erro inesperado: " .. tostring(success), 220, 60, 60, 5)
-    elseif success then
-        setStatus("✔ " .. (type(msg) == "string" and stripRich(msg) or "Código resgatado!"), 60, 200, 100, 5)
-        tb.Text = ""
-    else
-        setStatus("✕ " .. (type(msg) == "string" and stripRich(msg) or "Falhou"), 220, 60, 60, 5)
-    end
-
-    task.wait(0.5) -- mesmo cooldown do jogo
-    redeemBtn.Text = "RESGATAR"
-    busy = false
+    local open = codesFrame and codesFrame.Visible
+    setStatus(open and "Código colocado. Clique em Confirm no menu Codes."
+        or "Código colocado. Abra o menu Codes e clique em Confirm.", 230, 200, 80, 10)
 end
 
+redeemBtn.Text = "COLOCAR NO MENU CODES"
 redeemBtn.MouseButton1Click:Connect(redeem)
 tb.FocusLost:Connect(function(enter)
     if enter then redeem() end
@@ -609,9 +459,9 @@ end)
 local captureText = captureMode == "hook" and "hook ativo"
     or captureMode == "remote" and "escutando remote"
     or "captura indisponível"
-local remoteText = redeemRemote and "remote ok" or "remote não encontrada"
-setStatus(("Topo: %s · Codes: %s"):format(captureText, remoteText),
-    (captureMode ~= "nenhum" and redeemRemote) and 60 or 220,
-    (captureMode ~= "nenhum" and redeemRemote) and 200 or 120,
-    (captureMode ~= "nenhum" and redeemRemote) and 100 or 60,
+local boxOk = getGameCodeBox() ~= nil
+setStatus(("Topo: %s · Menu Codes: %s"):format(captureText, boxOk and "ok" or "não achado"),
+    (captureMode ~= "nenhum" and boxOk) and 60 or 220,
+    (captureMode ~= "nenhum" and boxOk) and 200 or 120,
+    (captureMode ~= "nenhum" and boxOk) and 100 or 60,
     6)
