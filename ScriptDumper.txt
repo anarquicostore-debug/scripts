@@ -19,18 +19,20 @@ local CONFIG = {
 	-- false -> Pasta/Shared/X.lua (igual ao dump de exemplo)
 	IncludeServiceFolder = false,
 
+	-- "zip"    -> só gera <Pasta>.zip (um arquivo, fácil de mandar)
+	-- "folder" -> só gera a pasta com os .lua
+	-- "both"   -> gera os dois
+	Output = "zip",
+
 	-- Onde procurar scripts
 	Services = {
 		"ReplicatedStorage",
 		"ReplicatedFirst",
 		"StarterPlayer",
 		"StarterGui",
-		"StarterPack",
 		"Workspace",
-		"Lighting",
-		"SoundService",
-		"Chat",
-		"Teams",
+		-- quase nunca têm scripts úteis, ative se quiser:
+		-- "StarterPack", "Lighting", "SoundService", "Chat", "Teams",
 	},
 	IncludePlayerScripts = true, -- LocalPlayer.PlayerScripts / PlayerGui / Backpack / Character
 	IncludeNilInstances = true, -- scripts parentados a nil (getnilinstances)
@@ -283,9 +285,72 @@ end
 notify(("Encontrados %d scripts. Decompilando..."):format(total))
 
 ---------------------------------------------------------------------------
+-- ZIP (método "store", sem compressão) — escrito em Lua puro
+---------------------------------------------------------------------------
+local CRC_TABLE = {}
+for i = 0, 255 do
+	local c = i
+	for _ = 1, 8 do
+		if bit32.band(c, 1) == 1 then
+			c = bit32.bxor(0xEDB88320, bit32.rshift(c, 1))
+		else
+			c = bit32.rshift(c, 1)
+		end
+	end
+	CRC_TABLE[i] = c
+end
+
+local function crc32(s)
+	local band, bxor, rshift, byte = bit32.band, bit32.bxor, bit32.rshift, string.byte
+	local crc = 0xFFFFFFFF
+	for i = 1, #s do
+		crc = bxor(rshift(crc, 8), CRC_TABLE[band(bxor(crc, byte(s, i)), 0xFF)])
+	end
+	return bxor(crc, 0xFFFFFFFF)
+end
+
+local function dosDateTime()
+	local t = os.date("*t")
+	local time = bit32.bor(bit32.lshift(t.hour, 11), bit32.lshift(t.min, 5), math.floor(t.sec / 2))
+	local date = bit32.bor(bit32.lshift(math.max(t.year - 1980, 0), 9), bit32.lshift(t.month, 5), t.day)
+	return time, date
+end
+
+local function newZip()
+	local dosTime, dosDate = dosDateTime()
+	return { parts = {}, central = {}, offset = 0, count = 0, time = dosTime, date = dosDate }
+end
+
+local UTF8_FLAG = 0x0800 -- nomes de arquivo em UTF-8
+
+local function zipAdd(z, name, data)
+	local crc, size = crc32(data), #data
+	local header = string.pack("<I4I2I2I2I2I2I4I4I4I2I2",
+		0x04034b50, 20, UTF8_FLAG, 0, z.time, z.date, crc, size, size, #name, 0) .. name
+	table.insert(z.parts, header)
+	table.insert(z.parts, data)
+	table.insert(z.central, string.pack("<I4I2I2I2I2I2I2I4I4I4I2I2I2I2I2I4I4",
+		0x02014b50, 20, 20, UTF8_FLAG, 0, z.time, z.date, crc, size, size, #name, 0, 0, 0, 0, 0, z.offset) .. name)
+	z.offset += #header + size
+	z.count += 1
+end
+
+local function zipFinish(z)
+	local cd = table.concat(z.central)
+	local eocd = string.pack("<I4I2I2I2I2I4I4I2", 0x06054b50, 0, 0, z.count, z.count, #cd, z.offset, 0)
+	return table.concat(z.parts) .. cd .. eocd
+end
+
+---------------------------------------------------------------------------
 -- Dump
 ---------------------------------------------------------------------------
-ensureFolder(ROOT)
+local toFolder = CONFIG.Output == "folder" or CONFIG.Output == "both"
+local toZip = CONFIG.Output == "zip" or CONFIG.Output == "both"
+local zip = toZip and newZip() or nil
+
+if toFolder then
+	ensureFolder(ROOT)
+end
 
 local okCount, failCount = 0, 0
 local startTime = os.clock()
@@ -298,14 +363,19 @@ for i, item in ipairs(queue) do
 		okCount += 1
 	end
 
-	local folder = item.path:match("^(.*)/[^/]+$")
-	if folder then
-		ensureFolder(folder)
+	if toFolder then
+		local folder = item.path:match("^(.*)/[^/]+$")
+		if folder then
+			ensureFolder(folder)
+		end
+		local wrote = pcall(writefile, item.path .. ".lua", source)
+		if not wrote then
+			warn("[Dumper] Falha ao salvar: " .. item.path)
+		end
 	end
 
-	local wrote = pcall(writefile, item.path .. ".lua", source)
-	if not wrote then
-		warn("[Dumper] Falha ao salvar: " .. item.path)
+	if zip then
+		zipAdd(zip, item.path .. ".lua", source)
 	end
 
 	if i % CONFIG.YieldEvery == 0 then
@@ -314,4 +384,17 @@ for i, item in ipairs(queue) do
 	end
 end
 
-notify(("Pronto! %d ok, %d falharam (%.1fs). Pasta: %s"):format(okCount, failCount, os.clock() - startTime, ROOT))
+local saved = toFolder and ROOT or ""
+if zip then
+	notify("Montando o .zip...")
+	local okZip, err = pcall(function()
+		writefile(ROOT .. ".zip", zipFinish(zip))
+	end)
+	if okZip then
+		saved = (toFolder and (ROOT .. " + ") or "") .. ROOT .. ".zip"
+	else
+		warn("[Dumper] Falha ao gerar o .zip: " .. tostring(err))
+	end
+end
+
+notify(("Pronto! %d ok, %d falharam (%.1fs). Salvo: %s"):format(okCount, failCount, os.clock() - startTime, saved))
