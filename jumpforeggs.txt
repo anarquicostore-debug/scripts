@@ -734,8 +734,7 @@ local function makeToggle(key, label, y, enabled, onChange)
     paint()
 end
 
-makeToggle("farm",     "Farm level (trampolim)", 52,  launchRemote ~= nil)
-makeToggle("tp",       "Teleportar pro trampolim", 92, launchRemote ~= nil)
+makeToggle("farm",     "Farm level (só remote)", 52,  launchRemote ~= nil)
 makeToggle("egg",      "Auto colocar ovo",       132, eggRemote ~= nil)
 makeToggle("brainrot", "Auto colocar brainrot",  172, brainRemote ~= nil)
 makeToggle("upgrade",  "Auto upgrade trampolim", 212, upgradeRemote ~= nil)
@@ -780,51 +779,105 @@ closeBtn.MouseButton1Click:Connect(function()
     sg:Destroy()
 end)
 
--- Farm: mesma lógica do PostSimulation do jogo (linhas 866-906):
--- cooldown 0.3s, velY <= 10, no chão ou caindo (velY <= -10), em cima do pad.
+-- Farm level: só remote. Estando perto do trampolim mais próximo, envia
+-- JumpPadService/LaunchRequest:FireServer(pad) (mesma chamada da linha 906),
+-- sem precisar estar em cima dele e sem mover o personagem.
+-- O XP é lido da barra do jogo (PlayerGui.JumpLTMLevel, JumpLTMLevelController:180)
+-- pra mostrar se o servidor está aceitando.
+local FARM_RANGE = 25   -- studs da borda do trampolim
+local LAUNCH_CD  = 0.35 -- o jogo usa 0.3s
 local launches, lastLaunch = 0, 0
-local LAUNCH_CD = 0.35
+local farmStats = { level = nil, xp = nil, need = nil, startXp = nil, startAt = nil,
+                    lastXpAt = nil, launchesSinceXp = 0, warned = false }
+
+-- distância do personagem até a caixa do trampolim (0 se estiver em cima/dentro)
+local function distToPad(pad, pos)
+    local rel = pad.CFrame:PointToObjectSpace(pos)
+    local h = pad.Size / 2
+    local cx = math.clamp(rel.X, -h.X, h.X)
+    local cy = math.clamp(rel.Y, -h.Y, h.Y)
+    local cz = math.clamp(rel.Z, -h.Z, h.Z)
+    return (rel - Vector3.new(cx, cy, cz)).Magnitude
+end
+
+-- "Level 5 <font ...>30/100 XP</font>" -> 5, 30, 100
+local function readLevel()
+    local gui = LP:FindFirstChild("PlayerGui")
+    local bar = gui and gui:FindFirstChild("JumpLTMLevel")
+    local label = bar and bar:FindFirstChild("Label", true)
+    if not (label and label:IsA("TextLabel")) then return nil end
+    local plain = label.Text:gsub("<[^>]->", "")
+    local lvl = tonumber(plain:match("Level%s*(%d+)"))
+    local cur, need = plain:match("(%d+)%s*/%s*(%d+)")
+    return lvl, tonumber(cur), tonumber(need), plain:find("MAX") ~= nil
+end
+
+-- Painel do farm (no lugar do antigo "Teleportar pro trampolim")
+local farmInfo = Instance.new("TextLabel")
+farmInfo.Size, farmInfo.Position = UDim2.new(1, -24, 0, 34), UDim2.new(0, 12, 0, 92)
+farmInfo.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+farmInfo.BorderSizePixel = 0
+farmInfo.RichText = true
+farmInfo.TextWrapped = true
+farmInfo.Font, farmInfo.TextSize = Enum.Font.Gotham, 11
+farmInfo.TextColor3 = Color3.fromRGB(200, 200, 200)
+farmInfo.Text = "Farm desligado"
+farmInfo.Parent = frame
+Instance.new("UICorner", farmInfo).CornerRadius = UDim.new(0, 6)
+
+local function updateFarmInfo(padDist)
+    local lvl, cur, need, max = readLevel()
+    local now = os.clock()
+    if lvl then
+        local total = (lvl * 1e6) + (cur or 0) -- só pra comparar se subiu
+        if farmStats.xp and total > farmStats.xp then
+            farmStats.lastXpAt = now
+            farmStats.launchesSinceXp = 0
+            farmStats.warned = false
+        end
+        farmStats.xp = total
+        if not farmStats.startAt then farmStats.startAt, farmStats.startLevel = now, lvl end
+    end
+    local lvTxt = lvl and (max and ("Lv %d MAX"):format(lvl)
+        or ("Lv %d  %s/%s XP"):format(lvl, tostring(cur or "?"), tostring(need or "?"))) or "Lv ?"
+    local gained = (lvl and farmStats.startLevel) and (lvl - farmStats.startLevel) or 0
+    local padTxt = padDist and ("%.0f studs"):format(padDist) or "—"
+    farmInfo.Text = ('<b>%s</b>  · +%d lv  · %d pulos  · pad %s'):format(lvTxt, gained, launches, padTxt)
+end
+
 table.insert(conns, RunService.Heartbeat:Connect(safe("farm", function()
     if not (toggles.farm and launchRemote) then return end
-    local _, hrp, hum = getChar()
+    local _, hrp = getChar()
     if not hrp then return end
     local now = os.clock()
     if now - lastLaunch < LAUNCH_CD then return end
+    lastLaunch = now
 
     local pad = nearestPad(hrp)
     if not pad then
+        updateFarmInfo(nil)
         setStatus("Nenhum trampolim (tag JumpPad) encontrado.", 220, 60, 60)
         return
     end
-
-    local height = math.max(4, hum.HipHeight + hrp.Size.Y)
-    local grounded = hum.FloorMaterial ~= Enum.Material.Air
-    local margin = grounded and 0 or 1
-    local over = isOverPad(pad, pad.CFrame:PointToObjectSpace(hrp.Position), margin, height)
-
-    if not over and toggles.tp then
-        -- Só voa se estiver fora do pad na horizontal (no ar depois do pulo
-        -- você continua em cima dele e não precisa voar de volta).
-        local rel = pad.CFrame:PointToObjectSpace(hrp.Position)
-        local outside = not isOverPad(pad, Vector3.new(rel.X, 0, rel.Z), 1, height)
-        if outside and not flying and not currentJob and not landing then
-            flyTo(function()
-                if not pad.Parent then return nil end
-                return (pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + hum.HipHeight + hrp.Size.Y / 2, 0)).Position
-            end, nil, { pad })
-        end
+    local d = distToPad(pad, hrp.Position)
+    if d > FARM_RANGE then
+        updateFarmInfo(d)
+        setStatus(("Chegue perto de um trampolim (%.0f/%d studs)."):format(d, FARM_RANGE), 220, 160, 60)
         return
     end
 
-    local velY = hrp.AssemblyLinearVelocity.Y
-    if over and velY <= 10 and (grounded or velY <= -10) then
-        lastLaunch = now
-        launchRemote:FireServer(pad)
-        launches = launches + 1
-        setStatus(("Farm: %d pulos em %s"):format(launches, pad:GetFullName():sub(-40)), 60, 200, 100)
-    elseif not over then
-        setStatus("Fique em cima do trampolim (ou ligue Teleportar).", 220, 160, 60)
+    launchRemote:FireServer(pad)
+    launches = launches + 1
+    farmStats.launchesSinceXp = farmStats.launchesSinceXp + 1
+    updateFarmInfo(d)
+
+    -- 20 envios sem XP subir: o servidor provavelmente exige mais perto
+    if farmStats.launchesSinceXp >= 20 and not farmStats.warned then
+        farmStats.warned = true
+        notify("⚠ Farm: 20 pulos sem ganhar XP. Fique mais perto (ou em cima) do trampolim.",
+            Color3.fromRGB(220, 160, 60))
     end
+    setStatus(("Farm ativo: %d pulos"):format(launches), 60, 200, 100)
 end)))
 
 -- Ovo / brainrot / upgrade: checa a cada 1s.
