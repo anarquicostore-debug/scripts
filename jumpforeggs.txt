@@ -175,82 +175,6 @@ local function nearestPad(hrp)
     return best, bestD
 end
 
--- ─── FLY (movimento físico até um ponto) ──────────────────────────────────────
--- Em vez de mudar o CFrame (TP), empurra o HumanoidRootPart com LinearVelocity,
--- igual o jogo faz no trampolim (launchFromPad, linha 555). O personagem passa
--- por todas as posições do caminho, com noclip enquanto voa.
-local FLY = { speed = 60 }
-local flying = nil -- { conn, noclip, att, lv, onDone }
-
-local function stopFly(reached)
-    local f = flying
-    if not f then return end
-    flying = nil
-    f.conn:Disconnect()
-    f.noclip:Disconnect()
-    f.lv:Destroy()
-    f.att:Destroy()
-    for part, cc in pairs(f.collide) do
-        if part.Parent then part.CanCollide = cc end
-    end
-    local _, hrp = getChar()
-    if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
-    if f.onDone then task.spawn(f.onDone, reached == true) end
-end
-
--- getTarget: função que devolve a posição alvo (Vector3) ou nil se sumiu.
-local function flyTo(getTarget, onDone)
-    stopFly(false)
-    local char, hrp, hum = getChar()
-    if not hrp then return false end
-    local target = getTarget()
-    if not target then return false end
-
-    local att = Instance.new("Attachment")
-    att.Name = "JFE_FlyAtt"
-    att.Parent = hrp
-    local lv = Instance.new("LinearVelocity")
-    lv.Name = "JFE_Fly"
-    lv.Attachment0 = att
-    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-    lv.RelativeTo = Enum.ActuatorRelativeTo.World
-    lv.MaxForce = math.huge
-    lv.VectorVelocity = Vector3.zero
-    lv.Parent = hrp
-
-    local collide = {}
-    for _, d in ipairs(char:GetDescendants()) do
-        if d:IsA("BasePart") then collide[d] = d.CanCollide end
-    end
-    local noclip = RunService.Stepped:Connect(function()
-        for part in pairs(collide) do
-            if part.Parent then part.CanCollide = false end
-        end
-    end)
-
-    local deadline = os.clock() + (target - hrp.Position).Magnitude / FLY.speed * 2 + 5
-    local conn = RunService.Heartbeat:Connect(function()
-        local _, h, hm = getChar()
-        local t = getTarget()
-        if not h or not t or h ~= hrp or os.clock() > deadline then
-            stopFly(false)
-            return
-        end
-        local delta = t - h.Position
-        local dist = delta.Magnitude
-        if dist < 1.5 then
-            stopFly(true)
-            return
-        end
-        -- desacelera no fim pra não passar do ponto
-        lv.VectorVelocity = delta.Unit * math.min(FLY.speed, dist * 6)
-        if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
-    end)
-
-    flying = { conn = conn, noclip = noclip, att = att, lv = lv, collide = collide, onDone = onDone }
-    return true
-end
-
 -- ─── GUI ──────────────────────────────────────────────────────────────────────
 local root = gethui and gethui() or game:GetService("CoreGui")
 local old = root:FindFirstChild("JumpForEggsGUI")
@@ -308,6 +232,206 @@ local function setStatus(msg, r, g, b)
     status.Text = msg
     status.TextColor3 = Color3.fromRGB(r or 130, g or 130, b or 130)
 end
+
+-- ─── FLY INTELIGENTE ──────────────────────────────────────────────────────────
+-- Movimento físico com LinearVelocity (igual launchFromPad, linha 555), seguindo
+-- uma rota calculada com Spherecast para não bater em ilhas:
+--   início → A (desvia pro lado até achar céu livre)
+--          → B (sobe/desce reto até a altitude de cruzeiro)
+--          → C (vai de lado na altitude, até em cima/ao lado do alvo)
+--          → D (desce até a altura do alvo, ao lado dele se tiver teto)
+--          → alvo
+-- A altitude de cruzeiro tenta primeiro a altura do ovo; se tiver ilha no meio
+-- do caminho, sobe em degraus de 25 studs até achar uma linha livre.
+local FLY = { speed = 60, radius = 2.5 }
+local flying = nil
+
+local function castParams(extraIgnore)
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    if LP.Character then table.insert(ignore, LP.Character) end
+    for _, x in ipairs(extraIgnore or {}) do table.insert(ignore, x) end
+    p.FilterDescendantsInstances = ignore
+    p.RespectCanCollide = true
+    p.IgnoreWater = true
+    return p
+end
+
+local casts = 0
+local function clear(a, b, params)
+    local d = b - a
+    if d.Magnitude < 0.5 then return true end
+    casts = casts + 1
+    if casts % 250 == 0 then task.wait() end -- não travar o jogo
+    return workspace:Spherecast(a, FLY.radius, d, params) == nil
+end
+
+local function ringOffsets(radii, dirs)
+    local list = { Vector3.zero }
+    for _, r in ipairs(radii) do
+        for i = 0, dirs - 1 do
+            local ang = i / dirs * math.pi * 2
+            table.insert(list, Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r))
+        end
+    end
+    return list
+end
+local START_OFFSETS = ringOffsets({ 12, 25, 45, 70, 100, 140 }, 16)
+local GOAL_OFFSETS  = ringOffsets({ 10, 20, 35, 55 }, 8)
+
+-- Devolve a lista de waypoints, ou nil se não achar rota livre.
+local function planPath(start, goal, params)
+    casts = 0
+    if clear(start, goal, params) and math.abs(start.Y - goal.Y) < 8 then
+        return { goal } -- linha reta livre e quase na mesma altura
+    end
+    local alts = { goal.Y }
+    local base = math.max(goal.Y, start.Y)
+    for k = 1, 10 do table.insert(alts, base + k * 25) end
+
+    for _, alt in ipairs(alts) do
+        -- pontos de saída: andar de lado (A) e depois subir reto até alt (B)
+        local outs = {}
+        for _, off in ipairs(START_OFFSETS) do
+            local A = start + off
+            local B = Vector3.new(A.X, alt, A.Z)
+            if clear(start, A, params) and clear(A, B, params) then
+                table.insert(outs, { A = A, B = B })
+                if #outs >= 6 then break end
+            end
+        end
+        -- pontos de chegada: descer reto de alt até D e ir de lado até o alvo
+        local ins = {}
+        if #outs > 0 then
+            for _, off in ipairs(GOAL_OFFSETS) do
+                local D = goal + off
+                local C = Vector3.new(D.X, alt, D.Z)
+                if clear(C, D, params) and clear(D, goal, params) then
+                    table.insert(ins, { C = C, D = D })
+                    if #ins >= 6 then break end
+                end
+            end
+        end
+        -- liga uma saída a uma chegada por uma linha reta na altitude
+        for _, o in ipairs(outs) do
+            for _, i in ipairs(ins) do
+                if clear(o.B, i.C, params) then
+                    local wp = {}
+                    for _, p in ipairs({ o.A, o.B, i.C, i.D, goal }) do
+                        local last = wp[#wp] or start
+                        if (p - last).Magnitude > 1 then table.insert(wp, p) end
+                    end
+                    log(("Rota: %d pontos, altitude %.0f, %d testes"):format(#wp, alt, casts))
+                    return wp
+                end
+            end
+        end
+    end
+    log("Sem rota livre (" .. casts .. " testes)")
+    return nil
+end
+
+local function stopFly(reached)
+    local f = flying
+    if not f then return end
+    flying = nil
+    f.alive = false
+    f.conn:Disconnect()
+    f.lv:Destroy()
+    f.att:Destroy()
+    local _, hrp = getChar()
+    if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
+    if f.onDone then task.spawn(f.onDone, reached == true) end
+end
+
+-- getTarget: devolve a posição alvo (Vector3) ou nil se o alvo sumiu.
+-- ignore: instâncias que não contam como obstáculo (ex.: o próprio ovo).
+local function flyTo(getTarget, onDone, ignore)
+    stopFly(false)
+    local _, hrp = getChar()
+    if not hrp then return false end
+    if not getTarget() then return false end
+
+    local att = Instance.new("Attachment")
+    att.Name = "JFE_FlyAtt"
+    att.Parent = hrp
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "JFE_Fly"
+    lv.Attachment0 = att
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.MaxForce = math.huge
+    lv.VectorVelocity = Vector3.zero -- fica parado no ar enquanto calcula
+    lv.Parent = hrp
+
+    local f = { alive = true, lv = lv, att = att, onDone = onDone, wp = nil, idx = 1, replans = 0 }
+    flying = f
+
+    local function replan()
+        local _, h = getChar()
+        local goal = getTarget()
+        if not (h and goal) then return stopFly(false) end
+        f.wp = nil
+        setStatus("Calculando rota...", 130, 130, 130)
+        task.spawn(function()
+            local wp = planPath(h.Position, goal, castParams(ignore))
+            if not f.alive then return end
+            if not wp then
+                setStatus("Sem rota livre até o alvo.", 220, 60, 60)
+                return stopFly(false)
+            end
+            f.wp, f.idx, f.goal = wp, 1, goal
+            f.lastPos, f.lastCheck = h.Position, os.clock()
+            f.deadline = os.clock() + 60
+            setStatus(("Voando: %d pontos de rota"):format(#wp), 60, 200, 100)
+        end)
+    end
+
+    f.conn = RunService.Heartbeat:Connect(function()
+        local _, h, hm = getChar()
+        if not h or h ~= hrp then return stopFly(false) end
+        local goal = getTarget()
+        if not goal then return stopFly(false) end
+        if not f.wp then
+            lv.VectorVelocity = Vector3.zero
+            return
+        end
+        -- alvo mudou de lugar: recalcula
+        if (goal - f.goal).Magnitude > 6 then
+            f.goal = goal
+            return replan()
+        end
+        if os.clock() > f.deadline then return stopFly(false) end
+
+        local p = f.wp[f.idx]
+        local delta = p - h.Position
+        local dist = delta.Magnitude
+        local last = f.idx == #f.wp
+        if dist < (last and 1.5 or 3) then
+            if last then return stopFly(true) end
+            f.idx = f.idx + 1
+            return
+        end
+        local spd = last and math.min(FLY.speed, dist * 6) or FLY.speed
+        lv.VectorVelocity = delta.Unit * spd
+        if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
+
+        -- travou em algo (não andou 1 stud em 0,7s): recalcula a partir daqui
+        if os.clock() - f.lastCheck > 0.7 then
+            if (h.Position - f.lastPos).Magnitude < 1 then
+                f.replans = f.replans + 1
+                if f.replans > 3 then return stopFly(false) end
+                return replan()
+            end
+            f.lastPos, f.lastCheck = h.Position, os.clock()
+        end
+    end)
+
+    replan()
+    return true
+end
+
 
 local toggles = {}
 local function makeToggle(key, label, y, enabled, onChange)
@@ -416,7 +540,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
             flyTo(function()
                 if not pad.Parent then return nil end
                 return (pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + hum.HipHeight + hrp.Size.Y / 2, 0)).Position
-            end)
+            end, nil, { pad })
         end
         return
     end
@@ -921,7 +1045,7 @@ local function makeCard(e)
         end, function(reached)
             if tp.Parent then tp.Text = "VOAR" end
             setStatus(reached and "Chegou no ovo." or "Voo cancelado.", reached and 60 or 220, reached and 200 or 160, reached and 100 or 60)
-        end)
+        end, { model })
         if ok then
             flying.card = card
             tp.Text = "PARAR"
