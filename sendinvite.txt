@@ -5,18 +5,43 @@ local TweenService      = game:GetService("TweenService")
 
 local LP = Players.LocalPlayer
 
--- ─── GUI ROOT ─────────────────────────────────────────────────────────────────
-local root = gethui and gethui() or game:GetService("CoreGui")
+-- ─── GUI ROOT (protegida) ────────────────────────────────────────────────────
+-- A GUI vai pro container escondido do executor (gethui), com protect_gui quando
+-- existir e nome aleatório. Os scripts do jogo não enxergam esse container.
+local function guiRoot()
+    local ok, h = pcall(function() return gethui and gethui() end)
+    if ok and typeof(h) == "Instance" then return h end
+    local cg = game:GetService("CoreGui")
+    local ok2, ref = pcall(function() return cloneref and cloneref(cg) end)
+    return (ok2 and typeof(ref) == "Instance") and ref or cg
+end
 
-local old = root:FindFirstChild("TradeInviteGUI")
-if old then old:Destroy() end
+local function newProtectedGui(tag)
+    -- fecha a GUI de uma execução anterior deste script
+    pcall(function()
+        local env = getgenv and getgenv() or _G
+        if env[tag] and typeof(env[tag]) == "Instance" then env[tag]:Destroy() end
+    end)
+    local g = Instance.new("ScreenGui")
+    g.Name = game:GetService("HttpService"):GenerateGUID(false):gsub("-", "")
+    g.ResetOnSpawn = false
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    g.IgnoreGuiInset = false
+    pcall(function()
+        if syn and syn.protect_gui then syn.protect_gui(g)
+        elseif protect_gui then protect_gui(g)
+        elseif protectgui then protectgui(g) end
+    end)
+    g.Parent = guiRoot()
+    pcall(function()
+        local env = getgenv and getgenv() or _G
+        env[tag] = g
+    end)
+    return g
+end
 
 -- ScreenGui
-local sg = Instance.new("ScreenGui")
-sg.Name           = "TradeInviteGUI"
-sg.ResetOnSpawn   = false
-sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-sg.Parent         = root
+local sg = newProtectedGui("V3ntTradeInviteGui")
 
 -- ─── FRAME PRINCIPAL ──────────────────────────────────────────────────────────
 local frame = Instance.new("Frame")
@@ -203,7 +228,30 @@ local INVITE_GUID = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4" -- TradeController:35
 local SEARCH_GUID = "5bbf0ed7-abce-44dc-aec6-d72992f7e476" -- TradeController:615
 local SEARCH_COOLDOWN = 5
 
-local function log(...) print("[TradeSender]", ...) end
+-- ─── REGISTRO DE KICK ─────────────────────────────────────────────────────────
+-- Só observa: guarda as últimas linhas de log e, se o jogo/servidor desconectar
+-- você, salva o motivo + o que o script fez antes em v3nt_trade_kick_log.txt.
+local recentLog = {}
+local function remember(line)
+    table.insert(recentLog, os.date("%H:%M:%S") .. " " .. line)
+    if #recentLog > 60 then table.remove(recentLog, 1) end
+end
+pcall(function()
+    game:GetService("GuiService").ErrorMessageChanged:Connect(function(msg)
+        if type(msg) ~= "string" or msg == "" then return end
+        local report = "MOTIVO: " .. msg .. "\n\nÚLTIMAS AÇÕES:\n" .. table.concat(recentLog, "\n")
+        warn("[KICK] " .. msg)
+        pcall(function() writefile("v3nt_trade_kick_log.txt", report) end)
+        pcall(function() setclipboard(report) end)
+    end)
+end)
+
+local function log(...)
+    print("[TradeSender]", ...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+    remember(table.concat(parts, " "))
+end
 
 local getupvals = (debug and debug.getupvalues) or getupvalues
 local getconsts = (debug and debug.getconstants) or getconstants

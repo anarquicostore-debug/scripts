@@ -14,7 +14,30 @@ local TweenService      = game:GetService("TweenService")
 
 local LP = Players.LocalPlayer
 
-local function log(...) print("[JumpForEggs]", ...) end
+-- ─── REGISTRO DE KICK ─────────────────────────────────────────────────────────
+-- Só observa: guarda as últimas linhas de log e, se o jogo/servidor desconectar
+-- você, salva o motivo + o que o script fez antes em v3nt_kick_log.txt.
+local recentLog = {}
+local function remember(line)
+    table.insert(recentLog, os.date("%H:%M:%S") .. " " .. line)
+    if #recentLog > 60 then table.remove(recentLog, 1) end
+end
+pcall(function()
+    game:GetService("GuiService").ErrorMessageChanged:Connect(function(msg)
+        if type(msg) ~= "string" or msg == "" then return end
+        local report = "MOTIVO: " .. msg .. "\n\nÚLTIMAS AÇÕES:\n" .. table.concat(recentLog, "\n")
+        warn("[KICK] " .. msg)
+        pcall(function() writefile("v3nt_kick_log.txt", report) end)
+        pcall(function() setclipboard(report) end)
+    end)
+end)
+
+local function log(...)
+    print("[JumpForEggs]", ...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+    remember(table.concat(parts, " "))
+end
 
 -- Envolve callbacks: um erro nunca derruba o script nem trava o player.
 local function safe(label, fn)
@@ -197,13 +220,42 @@ local function nearestPad(hrp)
 end
 
 -- ─── GUI ──────────────────────────────────────────────────────────────────────
-local root = gethui and gethui() or game:GetService("CoreGui")
-local old = root:FindFirstChild("JumpForEggsGUI")
-if old then old:Destroy() end
+-- ─── GUI ROOT (protegida) ────────────────────────────────────────────────────
+-- A GUI vai pro container escondido do executor (gethui), com protect_gui quando
+-- existir e nome aleatório. Os scripts do jogo não enxergam esse container.
+local function guiRoot()
+    local ok, h = pcall(function() return gethui and gethui() end)
+    if ok and typeof(h) == "Instance" then return h end
+    local cg = game:GetService("CoreGui")
+    local ok2, ref = pcall(function() return cloneref and cloneref(cg) end)
+    return (ok2 and typeof(ref) == "Instance") and ref or cg
+end
 
-local sg = Instance.new("ScreenGui")
-sg.Name, sg.ResetOnSpawn, sg.ZIndexBehavior = "JumpForEggsGUI", false, Enum.ZIndexBehavior.Sibling
-sg.Parent = root
+local function newProtectedGui(tag)
+    -- fecha a GUI de uma execução anterior deste script
+    pcall(function()
+        local env = getgenv and getgenv() or _G
+        if env[tag] and typeof(env[tag]) == "Instance" then env[tag]:Destroy() end
+    end)
+    local g = Instance.new("ScreenGui")
+    g.Name = game:GetService("HttpService"):GenerateGUID(false):gsub("-", "")
+    g.ResetOnSpawn = false
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    g.IgnoreGuiInset = false
+    pcall(function()
+        if syn and syn.protect_gui then syn.protect_gui(g)
+        elseif protect_gui then protect_gui(g)
+        elseif protectgui then protectgui(g) end
+    end)
+    g.Parent = guiRoot()
+    pcall(function()
+        local env = getgenv and getgenv() or _G
+        env[tag] = g
+    end)
+    return g
+end
+
+local sg = newProtectedGui("V3ntJumpForEggGui")
 
 local frame = Instance.new("Frame")
 frame.Size             = UDim2.new(0, 300, 0, 420)
@@ -786,12 +838,12 @@ closeBtn.MouseButton1Click:Connect(shutdown)
 
 -- Farm level com vários métodos. Cada um é testado por um tempo; se o XP
 -- (barra do jogo) não subir, passa pro próximo. O que funcionar fica ativo.
---   1) Remote perto      : LaunchRequest:FireServer(pad) a até 25 studs, sem mover.
+--   3) Remote perto      : LaunchRequest:FireServer(pad) a até 25 studs, sem mover.
 --   2) Remote em cima    : anda até o pad (Humanoid:MoveTo) e repete o que o
 --                          cliente do jogo faz (linhas 866-906): mesmas condições
 --                          (no chão ou caindo, cooldown 0.3s), impulso físico do
 --                          launchFromPad (linha 555) + FireServer(pad).
---   3) Nativo            : só fica em cima do pad e deixa o próprio jogo pular
+--   1) Nativo            : só fica em cima do pad e deixa o próprio jogo pular
 --                          (cliente ou servidor, quando ServerAuthority está ligado).
 local FARM_RANGE = 25
 local TRIAL_SECONDS = 15
@@ -858,7 +910,9 @@ local function xpScore()
     return nil
 end
 
-local METHODS = { "Remote perto", "Remote em cima", "Nativo (jogo pula)" }
+-- Ordem do mais seguro pro mais arriscado: o "Remote perto" manda pulos sem
+-- você estar no pad, que é o que o servidor tem mais chance de punir.
+local METHODS = { "Nativo (jogo pula)", "Remote em cima", "Remote perto" }
 local farm = { method = 1, trialStart = nil, trialXp = nil, locked = false, failed = false,
                startLevel = nil, lastMove = 0 }
 
@@ -974,10 +1028,11 @@ table.insert(conns, RunService.Heartbeat:Connect(safe("farm", function()
     end
 
     local m = farm.method
-    if m == 1 then
+    if m == 3 then
         lastLaunch = now
         launchRemote:FireServer(pad)
         launches = launches + 1
+        remember(("LaunchRequest (perto, %.0f studs)"):format(d))
     elseif m == 2 then
         local over = walkOnto(pad, hum, hrp)
         local velY = hrp.AssemblyLinearVelocity.Y
@@ -987,9 +1042,10 @@ table.insert(conns, RunService.Heartbeat:Connect(safe("farm", function()
             launchPhysics(pad, hrp)
             launchRemote:FireServer(pad)
             launches = launches + 1
+            remember("LaunchRequest (em cima)")
         end
     else
-        -- 3: só fica em cima; conta os pulos pela velocidade pra cima
+        -- 1 (nativo): só fica em cima; conta os pulos pela velocidade pra cima
         walkOnto(pad, hum, hrp)
         if hrp.AssemblyLinearVelocity.Y > 40 and now - lastLaunch > 0.6 then
             lastLaunch = now
