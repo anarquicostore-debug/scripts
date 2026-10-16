@@ -315,9 +315,21 @@ local function stripRich(s)
     return (s:gsub("<[^>]->", ""):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"))
 end
 
+-- Quando estamos esperando o resultado de um resgate, a próxima notificação
+-- normal (não "Top") do jogo é o Success/Error do CodesController.
+local pendingRedeem = nil
+
 -- Chamado pelo hook. Usa task.defer para sair da pilha do jogo antes de mexer na GUI.
 genv.__SammyTopCallback = function(text, position, userId)
-    if position ~= "Top" or type(text) ~= "string" or text == "" then return end
+    if type(text) ~= "string" or text == "" then return end
+    if position ~= "Top" then
+        if pendingRedeem then
+            local cb = pendingRedeem
+            pendingRedeem = nil
+            task.defer(cb, text)
+        end
+        return
+    end
     task.defer(function()
         local clean = stripRich(text)
         print(("[Sammy Watcher] %s: %s"):format(displayName(userId), clean))
@@ -445,6 +457,78 @@ if not redeemRemote then
     end
 end
 
+-- ─── RESGATE PELO PRÓPRIO JOGO ────────────────────────────────────────────────
+-- CodesController.lua:13/87/61: PlayerGui.Codes.Codes.CodeRedeem.TextBox
+-- tem um FocusLost(enterPressed) que chama submitCode(). Colocamos o código na
+-- TextBox do jogo e rodamos esse handler com task.spawn: a thread nova começa
+-- direto na função do jogo, então o ambiente do executor não fica na pilha.
+local function getGameCodeBox()
+    local pg = LP:FindFirstChild("PlayerGui")
+    local gui = pg and pg:FindFirstChild("Codes")
+    local codes = gui and gui:FindFirstChild("Codes")
+    local redeemFrame = codes and codes:FindFirstChild("CodeRedeem")
+    return redeemFrame and redeemFrame:FindFirstChild("TextBox")
+end
+
+local function getGameSubmitHandler(box)
+    if not (box and getconnections) then return nil end
+    local ok, conns = pcall(getconnections, box.FocusLost)
+    if not ok then return nil end
+    local fallback = nil
+    for _, c in ipairs(conns) do
+        local f = c.Function
+        if type(f) == "function" then
+            fallback = fallback or f
+            -- o handler do jogo tem submitCode (uma função) como upvalue
+            if getupvalues then
+                local okUp, ups = pcall(getupvalues, f)
+                if okUp then
+                    for _, up in pairs(ups) do
+                        if type(up) == "function" then return f end
+                    end
+                end
+            end
+        end
+    end
+    return fallback
+end
+
+local function redeemViaGame(code)
+    local box = getGameCodeBox()
+    local handler = getGameSubmitHandler(box)
+    if not handler then return false end
+    if not box.Active then
+        return true, false, "O jogo ainda está processando outro código."
+    end
+
+    local result = nil
+    pendingRedeem = function(text) result = text end
+
+    box.Text = code
+    task.wait() -- deixa o filtro de texto do jogo rodar
+    if box.Text ~= code then
+        pendingRedeem = nil
+        return true, false, "O jogo alterou o código (" .. box.Text .. ")."
+    end
+    task.spawn(handler, true)
+
+    local t0 = os.clock()
+    while result == nil and os.clock() - t0 < 8 do
+        task.wait(0.05)
+    end
+    pendingRedeem = nil
+
+    if result == nil then
+        if captureMode ~= "hook" then
+            return true, true, "Enviado. Veja a notificação do jogo."
+        end
+        return true, false, "Sem resposta do jogo (timeout)."
+    end
+    -- NotificationController: Success = #92FF67, Error = #FA0103
+    local success = result:upper():find("92FF67", 1, true) ~= nil
+    return true, success, stripRich(result)
+end
+
 -- ─── LÓGICA DO RESGATE (igual ao submitCode do CodesController) ─────────────
 local busy = false
 
@@ -458,6 +542,27 @@ local function redeem()
         return
     end
 
+    -- 1) Caminho preferido: o próprio submitCode do jogo
+    busy = true
+    redeemBtn.Text = "Resgatando..."
+    setStatus("Resgatando " .. code .. " pelo jogo...", 130, 130, 130)
+    local used, gSuccess, gMsg = redeemViaGame(code)
+    if used then
+        print("[Codes] via jogo:", code, gSuccess, gMsg)
+        if gSuccess then
+            setStatus("✔ " .. gMsg, 60, 200, 100, 6)
+            tb.Text = ""
+        else
+            setStatus("✕ " .. gMsg, 220, 60, 60, 6)
+        end
+        task.wait(0.5)
+        redeemBtn.Text = "RESGATAR"
+        busy = false
+        return
+    end
+    busy = false
+
+    -- 2) Fallback: remote direta
     if not redeemRemote then
         redeemRemote = findRedeemRemote()
         if not redeemRemote then
@@ -473,6 +578,7 @@ local function redeem()
     local callOk, success, msg = pcall(function()
         return redeemRemote:InvokeServer(code)
     end)
+    print("[Codes] remote direta:", redeemRemote:GetFullName(), code, callOk, success, msg)
 
     if not callOk then
         setStatus("✕ Erro inesperado: " .. tostring(success), 220, 60, 60, 5)
