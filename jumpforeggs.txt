@@ -1541,78 +1541,6 @@ local function pillButton(parent, label, style, props)
     return b, b
 end
 
--- ─── EFEITO DE RARIDADE / MUTAÇÃO ────────────────────────────────────────────
--- 1º usa o efeito do próprio jogo (Packages.Gradients e Shared.MutationText, os
--- mesmos do overhead dos brainrots, AnimalOverheadController); se não der,
--- usa os degradês abaixo, feitos pros presets de Datas.Rarities.
-local GameGradients = tryRequire("Packages", "Gradients")
-local GameMutationText = tryRequire("Shared", "MutationText")
-
-local function cs(...)
-    local cols, kps = { ... }, {}
-    for i, c in ipairs(cols) do table.insert(kps, ColorSequenceKeypoint.new((i - 1) / (#cols - 1), c)) end
-    return ColorSequence.new(kps)
-end
-local PRESETS = {
-    Rainbow   = cs(Color3.fromRGB(255, 60, 60), Color3.fromRGB(255, 200, 40), Color3.fromRGB(60, 230, 90),
-                   Color3.fromRGB(50, 170, 255), Color3.fromRGB(190, 70, 255), Color3.fromRGB(255, 60, 60)),
-    Zebra     = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(20, 20, 20)), ColorSequenceKeypoint.new(0.24, Color3.fromRGB(20, 20, 20)),
-        ColorSequenceKeypoint.new(0.25, Color3.fromRGB(245, 245, 245)), ColorSequenceKeypoint.new(0.49, Color3.fromRGB(245, 245, 245)),
-        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(20, 20, 20)), ColorSequenceKeypoint.new(0.74, Color3.fromRGB(20, 20, 20)),
-        ColorSequenceKeypoint.new(0.75, Color3.fromRGB(245, 245, 245)), ColorSequenceKeypoint.new(1, Color3.fromRGB(245, 245, 245)) }),
-    OG        = cs(Color3.fromRGB(255, 215, 90), Color3.fromRGB(255, 255, 255), Color3.fromRGB(255, 180, 40)),
-    YellowRed = cs(Color3.fromRGB(255, 230, 60), Color3.fromRGB(255, 70, 50)),
-    GreenRed  = cs(Color3.fromRGB(60, 220, 90), Color3.fromRGB(255, 70, 70)),
-}
-
-local function cleanupOf(x)
-    return function()
-        pcall(function()
-            local t = typeof(x)
-            if t == "function" then x()
-            elseif t == "RBXScriptConnection" then x:Disconnect()
-            elseif t == "Instance" then x:Destroy()
-            elseif t == "table" then
-                if type(x.Destroy) == "function" then x:Destroy()
-                elseif type(x.Disconnect) == "function" then x:Disconnect()
-                elseif type(x.Clean) == "function" then x:Clean() end
-            end
-        end)
-    end
-end
-
--- aplica o efeito da raridade no label; devolve a função de limpeza
-local function styleRarity(label, rarity)
-    local rd = rarity and RaritiesData[rarity]
-    local preset = rd and rd.GradientPreset
-    label.TextColor3 = rd and rd.Color or TH.text
-    if not preset then return function() end end
-    label.TextColor3 = Color3.new(1, 1, 1)
-    if GameGradients and type(GameGradients.apply) == "function" then
-        local ok, res = pcall(GameGradients.apply, label, preset)
-        if ok then return cleanupOf(res) end
-    end
-    local g = Instance.new("UIGradient")
-    g.Color = PRESETS[preset] or cs(rd.Color or Color3.new(1, 1, 1), Color3.new(1, 1, 1))
-    g.Parent = label
-    local conn = RunService.RenderStepped:Connect(function()
-        g.Offset = Vector2.new(((os.clock() * 0.4) % 2) - 1, 0)
-    end)
-    return function() pcall(function() conn:Disconnect(); g:Destroy() end) end
-end
-
--- mutação com o efeito do jogo; se não der, texto colorido do Datas.Mutations
-local function styleMutation(label, mutation)
-    label.RichText = true
-    if GameMutationText and type(GameMutationText.apply) == "function" then
-        local ok, res = pcall(GameMutationText.apply, label, mutation, "Auto")
-        if ok then return cleanupOf(res) end
-    end
-    label.Text = mutationRich(mutation) or tostring(mutation)
-    return function() end
-end
-
 local function chip(parent, order)
     local c = new("Frame", { Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X,
         BackgroundColor3 = TH.panel, BorderSizePixel = 0, LayoutOrder = order }, parent)
@@ -1623,7 +1551,8 @@ local function chip(parent, order)
     local icon = new("ImageLabel", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, Visible = false,
         LayoutOrder = 1 }, c)
     local label = text(c, { Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, TextSize = 11,
-        FontFace = U.FONT_BOLD, TextWrapped = false, LayoutOrder = 2 })
+        FontFace = U.FONT_BOLD, TextWrapped = false, LayoutOrder = 2, Text = "" })
+    c.Visible = false
     return c, label, icon
 end
 
@@ -1826,8 +1755,7 @@ local function makeCard(e)
         SortOrder = Enum.SortOrder.LayoutOrder }, chips)
     local rarityChip, rarityLabel = chip(chips, 1)
     local mutChip, mutLabel, mutIcon = chip(chips, 2)
-    local timeChip, timeLabel = chip(chips, 3)
-    local goneChip, goneLabel = chip(chips, 4)
+    local goneChip, goneLabel = chip(chips, 3)
     goneLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
 
     local traitsRow = new("Frame", { Position = UDim2.fromOffset(138, 64), Size = UDim2.new(1, -150, 0, 20),
@@ -1860,7 +1788,7 @@ local function makeCard(e)
     local moreBtn = pillButton(card, "Detalhes", "plain", { AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -12, 0, 134), Size = UDim2.new(0.5, -82, 0, 28) })
     if not isMap then ui.collectLabel.TextColor3 = TH.sub end
-    ui.cleanups = {}
+    ui.seq = 0
 
     local details = text(card, { Position = UDim2.fromOffset(12, 172), Size = UDim2.new(1, -24, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, TextSize = 11, TextColor3 = TH.sub, Visible = false,
@@ -1882,34 +1810,33 @@ local function makeCard(e)
         local a = type(ev.index) == "string" and AnimalsData[ev.index] or nil
         ev.displayName = a and a.DisplayName or ev.index
         name.Text = esc(ev.displayName or "Ovo")
+        name.TextColor3 = rcolor
         cardStroke.Color = rcolor
-        -- raridade (com o efeito de degradê do jogo: Rainbow, Zebra, OG...)
+        -- raridade (cor do jogo)
         local rarity = a and a.Rarity or (ev.overhead and ev.overhead.rarity)
         rarityChip.Visible = rarity ~= nil
         rarityLabel.Text = tostring(rarity or "")
-        if rarity ~= ui.styledRarity then
-            ui.styledRarity = rarity
-            for _, c in ipairs(ui.cleanups) do c() end
-            ui.cleanups = {}
-            table.insert(ui.cleanups, styleRarity(name, rarity))
-            table.insert(ui.cleanups, styleRarity(rarityLabel, rarity))
-        end
-        -- mutação (com o efeito do jogo)
+        rarityLabel.TextColor3 = rcolor
+        -- mutação: ícone do jogo + nome colorido (Datas.Mutations)
         mutChip.Visible = ev.mutation ~= nil
-        if ev.mutation and ev.mutation ~= ui.styledMutation then
-            ui.styledMutation = ev.mutation
-            mutLabel.Text = tostring(ev.mutation)
-            table.insert(ui.cleanups, styleMutation(mutLabel, ev.mutation))
+        if ev.mutation then
+            mutLabel.Text = mutationRich(ev.mutation) or tostring(ev.mutation)
             local ic = mutationIcon(ev.mutation)
             mutIcon.Visible = ic ~= nil
             if ic then mutIcon.Image = tostring(ic) end
         end
-        -- tempos
-        timeChip.Visible = timerTxt ~= nil
-        timeLabel.Text = timerTxt and ("Choca " .. esc(timerTxt)) or ""
-        local gone = type(ev.despawn) == "number" and fmtTime(ev.despawn) or nil
-        goneChip.Visible = gone ~= nil
-        goneLabel.Text = gone and ("Some em " .. esc(gone)) or ""
+        -- "Some em": o servidor manda o tempo de vez em quando; aqui ele conta
+        -- de 1 em 1 segundo e se acerta quando chega um valor novo
+        if type(ev.despawn) == "number" then
+            if ev.despawn ~= ui.despawnRaw then
+                ui.despawnRaw, ui.despawnAt = ev.despawn, os.clock()
+            end
+            local left = math.max(0, ui.despawnRaw - (os.clock() - ui.despawnAt))
+            goneChip.Visible = true
+            goneLabel.Text = "Some em " .. esc(fmtTime(left))
+        else
+            goneChip.Visible = false
+        end
         -- traits
         local names = {}
         for _, t in ipairs(ev.traits) do table.insert(names, traitRich(t)) end
@@ -1929,23 +1856,26 @@ local function makeCard(e)
             end
             hatch = table.concat(out, ", ")
         end
-        line2.Text = hatch ~= "" and ("Choca: " .. hatch) or ""
+        line2.Text = hatch ~= "" and ("Contém: " .. hatch) or ""
         if details.Visible then details.Text = full end
         details.Text = full
-        card.LayoutOrder = math.floor(dist or 99999)
+        -- ordem fixa (raridade mais alta primeiro, depois a ordem em que apareceu):
+        -- antes era pela distância e os cards trocavam de lugar o tempo todo
+        local rd = rarity and RaritiesData[rarity]
+        card.LayoutOrder = -((rd and rd.Weight or 0) * 100000) + ui.seq
     end
     return ui
 end
 
 -- ─── REFRESH (ESP + HUB) ─────────────────────────────────────────────────────
 local entries = {}
+local cardSeq = 0
 
 local function clearEntry(key)
     local ent = entries[key]
     if not ent then return end
     if ent.esp then pcall(function() ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end) end
     if ent.ui then
-        for _, c in ipairs(ent.ui.cleanups or {}) do c() end
         pcall(function() ent.ui.card:Destroy() end)
     end
     entries[key] = nil
@@ -1975,10 +1905,13 @@ local function refresh()
         end
 
         if toggles.hub then
-            ent.ui = ent.ui or makeCard(e)
+            if not ent.ui then
+                cardSeq = cardSeq + 1
+                ent.ui = makeCard(e)
+                ent.ui.seq = cardSeq
+            end
             ent.ui.update(e, hrp)
         elseif ent.ui then
-            for _, c in ipairs(ent.ui.cleanups or {}) do c() end
             pcall(function() ent.ui.card:Destroy() end)
             ent.ui = nil
         end
