@@ -13,21 +13,69 @@ local function p(...)
     print("[ChilliDiscover] " .. line)
 end
 
-local src
-pcall(function()
-    if isfile and isfile("chilli_library_v3nt.txt") then src = readfile("chilli_library_v3nt.txt") end
-end)
+local FILE_NAMES = { "chilli_library_v3nt.txt", "chilli_library_v3nt.lua", "Chilli_Library.txt", "Chilli_Library.lua" }
+local src, fileName
+for _, name in ipairs(FILE_NAMES) do
+    local ok, content = pcall(function()
+        if isfile and isfile(name) then return readfile(name) end
+    end)
+    if ok and type(content) == "string" and #content > 0 then
+        src, fileName = content, name
+        break
+    end
+end
 if not src then
-    warn("[ChilliDiscover] Não achei chilli_library_v3nt.txt na pasta workspace do executor.")
+    warn("[ChilliDiscover] Não achei a biblioteca na pasta workspace do executor (nomes: "
+        .. table.concat(FILE_NAMES, ", ") .. ")")
     return
 end
 
-local okLoad, factory = pcall(function() return loadstring(src)() end)
-p("load:", okLoad, typeof(factory))
-if not okLoad or type(factory) ~= "function" then p("erro:", factory) return end
+-- diagnóstico do que foi lido
+local function show(str) return (str:gsub("[%c]", " ")) end
+p("arquivo:", fileName, "tamanho:", #src)
+p("começo:", show(src:sub(1, 60)))
+p("fim:", show(src:sub(-60)))
+if src:sub(1, 3) == "\239\187\191" then
+    p("arquivo tem BOM UTF-8, removendo")
+    src = src:sub(4)
+end
 
-local Chilli
-for _, arg in ipairs({ { n = "nil" }, { n = "{}", v = {} } }) do
+local chunk, compileErr = loadstring(src)
+p("compilou:", chunk ~= nil, tostring(compileErr))
+if not chunk then return end
+
+local res = table.pack(pcall(chunk))
+p("executou:", res[1], "valores:", res.n - 1)
+for i = 2, res.n do p("  retorno " .. (i - 1) .. ":", typeof(res[i]), tostring(res[i])) end
+if not res[1] then return end
+
+local factory = res[2]
+-- alguns loaders guardam a lib num global em vez de retornar
+if factory == nil then
+    for _, where in ipairs({ "getgenv", "shared", "_G" }) do
+        local ok, env = pcall(function()
+            if where == "getgenv" then return getgenv() end
+            if where == "shared" then return shared end
+            return _G
+        end)
+        if ok and type(env) == "table" then
+            for k, v in pairs(env) do
+                if type(k) == "string" and k:lower():find("chilli") then
+                    p("global achado:", where .. "." .. k, typeof(v))
+                    factory = factory or v
+                end
+            end
+        end
+    end
+end
+if type(factory) ~= "function" and type(factory) ~= "table" then
+    p("erro: a biblioteca não devolveu nada utilizável")
+    pcall(function() setclipboard(table.concat(out, "\n")) end)
+    return
+end
+
+local Chilli = type(factory) == "table" and factory or nil
+for _, arg in ipairs(Chilli and {} or { { n = "nil" }, { n = "{}", v = {} } }) do
     local ok, lib = pcall(factory, arg.v)
     p("factory(" .. arg.n .. "):", ok, typeof(lib), ok and "" or tostring(lib))
     if ok and type(lib) == "table" then Chilli = lib break end
