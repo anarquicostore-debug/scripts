@@ -1,0 +1,137 @@
+-- Descobre as funções da Chilli Library (rode UMA vez no executor).
+-- 1) Coloque chilli_library_v3nt.txt na pasta "workspace" do executor.
+-- 2) Rode este script.
+-- 3) O resultado vai pro F9 e (se o executor tiver setclipboard) já é copiado.
+--    Cole o resultado pra mim.
+
+local out = {}
+local function p(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+    local line = table.concat(parts, " ")
+    table.insert(out, line)
+    print("[ChilliDiscover] " .. line)
+end
+
+local src
+pcall(function()
+    if isfile and isfile("chilli_library_v3nt.txt") then src = readfile("chilli_library_v3nt.txt") end
+end)
+if not src then
+    warn("[ChilliDiscover] Não achei chilli_library_v3nt.txt na pasta workspace do executor.")
+    return
+end
+
+local okLoad, factory = pcall(function() return loadstring(src)() end)
+p("load:", okLoad, typeof(factory))
+if not okLoad or type(factory) ~= "function" then p("erro:", factory) return end
+
+local Chilli
+for _, arg in ipairs({ { n = "nil" }, { n = "{}", v = {} } }) do
+    local ok, lib = pcall(factory, arg.v)
+    p("factory(" .. arg.n .. "):", ok, typeof(lib), ok and "" or tostring(lib))
+    if ok and type(lib) == "table" then Chilli = lib break end
+end
+if not Chilli then return end
+
+local function arity(fn)
+    local ok, n, va = pcall(function() return debug.info(fn, "a") end)
+    if ok and n then return ("(%s%s)"):format(tostring(n), va and ",..." or "") end
+    return ""
+end
+
+local function members(t)
+    local list, seen = {}, {}
+    local function add(src, from)
+        if type(src) ~= "table" then return end
+        for k, v in pairs(src) do
+            if not seen[k] then
+                seen[k] = true
+                table.insert(list, { k = tostring(k), v = v, from = from })
+            end
+        end
+    end
+    add(t, "self")
+    local mt = getmetatable(t)
+    if type(mt) == "table" then add(type(mt.__index) == "table" and mt.__index or nil, "meta") end
+    table.sort(list, function(a, b) return a.k < b.k end)
+    return list
+end
+
+local function dump(label, t)
+    p("==== " .. label .. " ====")
+    for _, m in ipairs(members(t)) do
+        local tv = typeof(m.v)
+        local extra = tv == "function" and arity(m.v) or (tv == "string" or tv == "number" or tv == "boolean") and ("= " .. tostring(m.v)) or ""
+        p(("  %s [%s] %s %s"):format(m.k, tv, extra, m.from == "meta" and "(método)" or ""))
+    end
+end
+
+local function findFn(t, ...)
+    local keys = { ... }
+    for _, m in ipairs(members(t)) do
+        if type(m.v) == "function" then
+            local low = m.k:lower()
+            for _, k in ipairs(keys) do
+                if low:find(k, 1, true) then return m.k, m.v end
+            end
+        end
+    end
+end
+
+-- tenta chamar com tabela de config e, se falhar, com texto
+local function tryCreate(obj, fnName, fn, name)
+    local ok, res = pcall(fn, obj, { Name = name, Title = name, Text = name, Callback = function() end })
+    if ok and type(res) == "table" then p(fnName .. "({Name=...}) ok") return res end
+    p(fnName .. "({...}) falhou:", tostring(res))
+    ok, res = pcall(fn, obj, name)
+    if ok and type(res) == "table" then p(fnName .. "(\"texto\") ok") return res end
+    p(fnName .. "(\"texto\") falhou:", tostring(res))
+end
+
+dump("ChilliLibrary", Chilli)
+
+local wName, wFn = findFn(Chilli, "window")
+p("criar janela:", wName)
+local window = wFn and tryCreate(Chilli, wName, wFn, "V3nt - Jump For Egg")
+if not window then
+    p("não consegui criar a janela")
+    pcall(function() setclipboard(table.concat(out, "\n")) end)
+    return
+end
+dump("Window", window)
+
+local tName, tFn = findFn(window, "tab")
+p("criar aba:", tName)
+local tab = tFn and tryCreate(window, tName, tFn, "Teste")
+if tab then dump("Tab", tab) end
+
+local holder = tab
+local sName, sFn = tab and findFn(tab, "section")
+p("criar seção:", sName)
+local section = sFn and tryCreate(tab, sName, sFn, "Seção")
+if section then dump("Section", section) holder = section end
+
+-- cria um de cada tipo de opção e lista os métodos da opção
+if holder then
+    for _, kind in ipairs({ "toggle", "button", "slider", "input", "textbox", "dropdown", "label", "paragraph", "keybind" }) do
+        local oName, oFn = findFn(holder, kind)
+        if oName then
+            p("---- opção:", kind, "->", oName)
+            local opt = tryCreate(holder, oName, oFn, "Teste " .. kind)
+            if opt then dump("Opção " .. oName, opt) end
+        end
+    end
+end
+
+-- notificação, se existir
+local nName = findFn(Chilli, "notif") or (window and findFn(window, "notif"))
+p("notificação:", tostring(nName))
+
+-- fecha a janela de teste
+local dName, dFn = findFn(window, "destroy")
+p("destruir:", tostring(dName))
+if dFn then pcall(dFn, window) end
+
+pcall(function() setclipboard(table.concat(out, "\n")) end)
+p("FIM — resultado copiado (se o executor suportar setclipboard).")
