@@ -194,33 +194,49 @@ local function setStatus(msg, r, g, b, duration)
 end
 
 -- ─── INVITE REMOTE ────────────────────────────────────────────────────────────
--- Tirado do TradeController (Steal a Brainrot):
---   v13:RemoteFunction("TradeService/Invite")
---   InvokeServer("8fbe1594-7cef-4c29-94d1-a0e93adfa5a4", userId) -> (ok, erro, inviteId)
-local INVITE_GUID = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4"
-local REMOTE_NAME = "TradeService/Invite"
+-- Pega a MESMA instância que o TradeController do jogo usa, lendo o upvalue
+-- da função SendInvite (no dump: "-- upvalues: (copy) v_u_40, ..." -> índice 1).
+-- Não chama Net:RemoteFunction() por conta própria.
+local INVITE_GUID  = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4"
+local inviteRemote = nil
 
-local function findInviteRemote()
-    -- 1) Mesmo caminho que o jogo usa: require(Packages.Net):RemoteFunction(...)
-    local ok, remote = pcall(function()
-        local Net = require(ReplicatedStorage:WaitForChild("Packages", 10):WaitForChild("Net", 10))
-        return Net:RemoteFunction(REMOTE_NAME)
-    end)
-    if ok and typeof(remote) == "Instance" and remote:IsA("RemoteFunction") then
-        return remote
-    end
-
-    -- 2) Fallback: procura a RemoteFunction pelo nome
-    for _, inst in ipairs(ReplicatedStorage:GetDescendants()) do
-        if inst:IsA("RemoteFunction")
-            and (inst.Name == REMOTE_NAME or inst.Name == "RF/" .. REMOTE_NAME) then
-            return inst
-        end
-    end
-    return nil
+local function isRemoteFunction(v)
+    return typeof(v) == "Instance" and v:IsA("RemoteFunction")
 end
 
-local inviteRemote = findInviteRemote()
+pcall(function()
+    local TradeController = require(ReplicatedStorage.Controllers.TradeController)
+    local getupvalues = debug.getupvalues or getupvalues
+    local getupvalue  = debug.getupvalue or getupvalue
+
+    if getupvalues then
+        for _, v in pairs(getupvalues(TradeController.SendInvite)) do
+            if isRemoteFunction(v) then
+                inviteRemote = v
+                break
+            end
+        end
+    elseif getupvalue then
+        local v = getupvalue(TradeController.SendInvite, 1)
+        if isRemoteFunction(v) then
+            inviteRemote = v
+        end
+    end
+end)
+
+-- Fallback: só aceita um nome que termine exatamente em "TradeService/Invite"
+-- (evita pegar AcceptInvite/DeclineInvite ou remotes-isca)
+if not inviteRemote then
+    pcall(function()
+        local Net = ReplicatedStorage:WaitForChild("Packages", 10):WaitForChild("Net", 10)
+        for _, c in ipairs(Net:GetChildren()) do
+            if c:IsA("RemoteFunction") and c.Name:sub(-#"TradeService/Invite") == "TradeService/Invite" then
+                inviteRemote = c
+                break
+            end
+        end
+    end)
+end
 
 -- ─── LÓGICA DO BOTÃO ──────────────────────────────────────────────────────────
 sendBtn.MouseButton1Click:Connect(function()
