@@ -207,6 +207,13 @@ local function newProtectedGui(tag)
     g.ResetOnSpawn = false
     g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     g.IgnoreGuiInset = false
+    -- Sem tradução automática do Roblox: senão ele traduz nossos textos pro idioma
+    -- da conta (ex.: "On" virava "Ligado", "Done" virava "Feito") e o seletor de
+    -- idioma do script não funcionava direito.
+    pcall(function() g.AutoLocalize = false end)
+    g.DescendantAdded:Connect(function(d)
+        if d:IsA("GuiBase2d") then pcall(function() d.AutoLocalize = false end) end
+    end)
     pcall(function()
         if syn and syn.protect_gui then syn.protect_gui(g)
         elseif protect_gui then protect_gui(g)
@@ -2605,21 +2612,35 @@ do
     end
 end
 
--- Modelo do ovo pro preview. Tenta, nesta ordem:
---   1) Shared.Animals:GetAnimatedModel(nome, "Idle") — o mesmo que o jogo usa pra
---      mostrar os ovos do mapa (WorldBrainrotController:92)
---   2) Shared.BrainrotAssets.getModel(nome)
---   3) ReplicatedStorage.Models.Animals[nome]
---   4) um ovo igual que já esteja no mapa ou num plot
+-- Modelo do ovo pro preview. Cada fonte tem limite de tempo (algumas funções do
+-- jogo esperam o download do modelo e travavam todos os previews). Ordem:
+--   1) um ovo igual que já esteja no mapa ou num plot (o mais rápido)
+--   2) Shared.Animals:GetAnimatedModel(nome, "Idle") (WorldBrainrotController:92)
+--   3) Shared.BrainrotAssets.getModel(nome)
+--   4) ReplicatedStorage.Models.Animals[nome]
 local SharedAnimals = tryRequire("Shared", "Animals")
+local function withTimeout(fn, seconds)
+    local done, result = false, nil
+    task.spawn(function()
+        local ok, r = pcall(fn)
+        if ok then result = r end
+        done = true
+    end)
+    local t0 = os.clock()
+    while not done and os.clock() - t0 < seconds do task.wait(0.05) end
+    return result
+end
 local function findEggModel(index)
+    for _, e in ipairs(collectEggs()) do
+        if e.index == index and e.model and e.model.Parent then return e.model, false end
+    end
     if SharedAnimals and type(SharedAnimals.GetAnimatedModel) == "function" then
-        local ok, m = pcall(SharedAnimals.GetAnimatedModel, SharedAnimals, index, "Idle")
-        if ok and typeof(m) == "Instance" then return m, true end
+        local m = withTimeout(function() return SharedAnimals:GetAnimatedModel(index, "Idle") end, 3)
+        if typeof(m) == "Instance" then return m, true end
     end
     if BrainrotAssets and type(BrainrotAssets.getModel) == "function" then
-        local ok, m = pcall(BrainrotAssets.getModel, index)
-        if ok and typeof(m) == "Instance" then return m, false end
+        local m = withTimeout(function() return BrainrotAssets.getModel(index) end, 3)
+        if typeof(m) == "Instance" then return m, false end
     end
     local found
     pcall(function()
@@ -2628,9 +2649,6 @@ local function findEggModel(index)
         found = an and an:FindFirstChild(index)
     end)
     if found then return found, false end
-    for _, e in ipairs(collectEggs()) do
-        if e.index == index and e.model then return e.model, false end
-    end
     return nil
 end
 
@@ -2657,6 +2675,7 @@ local function loadPreview(p)
             local model, isOwn = findEggModel(p.index)
             if not model then
                 p.loading.Text = "?"
+                p.loaded = false -- tenta de novo na próxima vez que abrir o painel
                 return
             end
             local copy
