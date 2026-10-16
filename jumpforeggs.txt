@@ -228,7 +228,7 @@ fix.Parent = topBar
 local title = Instance.new("TextLabel")
 title.Size, title.Position = UDim2.new(1, -50, 1, 0), UDim2.new(0, 14, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "🥚  Jump for Eggs"
+title.Text = "V3nt - Jump For Egg"
 title.TextColor3 = Color3.fromRGB(220, 220, 220)
 title.Font, title.TextSize = Enum.Font.GothamBold, 13
 title.TextXAlignment = Enum.TextXAlignment.Left
@@ -237,7 +237,7 @@ title.Parent = topBar
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size, closeBtn.Position = UDim2.new(0, 26, 0, 26), UDim2.new(1, -34, 0.5, -13)
 closeBtn.BackgroundColor3 = Color3.fromRGB(160, 20, 20)
-closeBtn.Text, closeBtn.TextColor3 = "✕", Color3.fromRGB(255, 255, 255)
+closeBtn.Text, closeBtn.TextColor3 = "X", Color3.fromRGB(255, 255, 255)
 closeBtn.Font, closeBtn.TextSize, closeBtn.BorderSizePixel = Enum.Font.GothamBold, 12, 0
 closeBtn.Parent = topBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
@@ -680,7 +680,7 @@ safeLand = function()
     release()
     if not okG or not ground then
         landing = false
-        notify("⚠ Não achei chão perto. Voo liberado.", Color3.fromRGB(220, 60, 60))
+        notify("Não achei chão perto. Voo liberado.", Color3.fromRGB(220, 60, 60))
         return
     end
     setStatus("Levando você pra ilha mais próxima...", 220, 160, 60)
@@ -874,7 +874,7 @@ local function updateFarmInfo(padDist)
     local lvTxt = lvl and (max and ("Lv %d MAX"):format(lvl)
         or ("Lv %d %s/%s"):format(lvl, tostring(cur or "?"), tostring(need or "?"))) or "Lv ?"
     local state = farm.failed and '<font color="#FF5555">nenhum método deu XP</font>'
-        or farm.locked and ('<font color="#55FF88">%s ✔</font>'):format(METHODS[farm.method])
+        or farm.locked and ('<font color="#55FF88">%s (ok)</font>'):format(METHODS[farm.method])
         or ('testando %d/%d: %s'):format(farm.method, #METHODS, METHODS[farm.method])
     farmInfo.Text = ('<b>%s</b> +%d · %d pulos · pad %s\n%s'):format(
         lvTxt, (lvl and farm.startLevel) and (lvl - farm.startLevel) or 0, launches,
@@ -890,7 +890,7 @@ local oldFarmToggle = toggles.farm
 local function nextMethod(why)
     if farm.method >= #METHODS then
         farm.failed = true
-        notify("⚠ Farm: nenhum dos " .. #METHODS .. " métodos deu XP (" .. why .. "). Me avise!",
+        notify("Farm: nenhum dos " .. #METHODS .. " métodos deu XP (" .. why .. "). Me avise!",
             Color3.fromRGB(220, 60, 60))
         return
     end
@@ -958,7 +958,7 @@ table.insert(conns, RunService.Heartbeat:Connect(safe("farm", function()
             farm.trialStart, farm.trialXp = now, xp
         elseif xp and farm.trialXp and xp > farm.trialXp then
             farm.locked = true
-            notify(("✔ Farm funcionando com o método %d (%s)"):format(farm.method, METHODS[farm.method]),
+            notify(("Farm funcionando com o método %d (%s)"):format(farm.method, METHODS[farm.method]),
                 Color3.fromRGB(60, 200, 100), 6)
         elseif now - farm.trialStart > TRIAL_SECONDS then
             nextMethod(xp and "XP não subiu" or "XP não legível")
@@ -1073,42 +1073,16 @@ for name, t in pairs(TraitsData) do
     if type(t) == "table" and t.Icon then traitByIcon[tostring(t.Icon)] = name end
 end
 
--- ─── Emojis ──────────────────────────────────────────────────────────────────
-local MUTATION_EMOJI = {
-    { "gold", "🟡" }, { "diamond", "💎" }, { "rainbow", "🌈" }, { "lava", "🌋" },
-    { "blood", "🩸" }, { "candy", "🍬" }, { "galaxy", "🌌" }, { "yin", "☯️" },
-    { "radioactive", "☢️" }, { "celestial", "🌠" }, { "cursed", "💀" }, { "divine", "👼" },
-    { "cyber", "🤖" }, { "crystal", "🔮" }, { "fire", "🔥" }, { "ice", "🧊" },
-    { "snow", "❄️" }, { "shadow", "🌑" }, { "glitch", "👾" }, { "neon", "💡" },
-    { "zombie", "🧟" }, { "pumpkin", "🎃" }, { "halloween", "🎃" }, { "christmas", "🎄" },
-    { "easter", "🐣" }, { "honey", "🍯" }, { "bee", "🐝" }, { "solar", "☀️" },
-    { "eclipse", "🌘" }, { "moon", "🌙" }, { "molten", "🌋" }, { "toxic", "☣️" },
-    { "phantom", "👻" }, { "ghost", "👻" }, { "silver", "⚪" }, { "bronze", "🟤" },
-    { "emerald", "💚" }, { "ruby", "❤️" }, { "sapphire", "💙" }, { "pearl", "🦪" },
-    { "chocolate", "🍫" }, { "strawberry", "🍓" }, { "lucky", "🍀" }, { "storm", "⛈️" },
-}
-local TRAIT_EMOJI = {
-    { "taco", "🌮" }, { "nyan", "🐱" }, { "glitch", "👾" }, { "rain", "🌧️" },
-    { "snow", "❄️" }, { "star", "🌠" }, { "galac", "🌌" }, { "explo", "💥" },
-    { "bubble", "🫧" }, { "zombie", "🧟" }, { "crab", "🦀" }, { "fire", "🔥" },
-    { "witch", "🧙" }, { "bomb", "💣" }, { "concert", "🎤" }, { "music", "🎵" },
-    { "shark", "🦈" }, { "hat", "🎩" }, { "brazil", "🇧🇷" }, { "sleep", "😴" },
-    { "ufo", "🛸" }, { "lightning", "⚡" }, { "spider", "🕷️" }, { "strawberry", "🍓" },
-    { "paint", "🎨" }, { "skele", "💀" }, { "meowl", "🦉" }, { "owl", "🦉" },
-    { "indonesia", "🇮🇩" }, { "mexico", "🇲🇽" }, { "japan", "🇯🇵" }, { "lucky", "🍀" },
-    { "soccer", "⚽" }, { "money", "💰" }, { "10b", "💰" }, { "crown", "👑" },
-    { "egg", "🥚" }, { "bee", "🐝" }, { "honey", "🍯" }, { "candy", "🍬" },
-    { "pumpkin", "🎃" }, { "ghost", "👻" }, { "christmas", "🎄" }, { "gift", "🎁" },
-    { "sun", "☀️" }, { "moon", "🌙" }, { "eclipse", "🌘" }, { "fish", "🐟" },
-    { "radio", "☢️" }, { "crystal", "🔮" }, { "heart", "❤️" }, { "angel", "👼" },
-}
-local function emojiFor(list, name, fallback)
-    if type(name) ~= "string" then return fallback end
-    local low = name:lower()
-    for _, pair in ipairs(list) do
-        if low:find(pair[1], 1, true) then return pair[2] end
-    end
-    return fallback
+-- Ícones: só os do próprio jogo (Datas.Mutations[x].Icon e Datas.Traits[x].Icon).
+local function mutationIcon(m) local d = m and MutationsData[m]; return d and d.Icon end
+local function traitIcon(t) local d = t and TraitsData[t]; return d and d.Icon end
+local function mutationRich(m)
+    local d = m and MutationsData[m]
+    return (d and d.DisplayWithRichText) or (m and ("<b>" .. tostring(m) .. "</b>")) or nil
+end
+local function traitRich(t)
+    local d = t and TraitsData[t]
+    return (d and d.DisplayWithRichText) or tostring(t)
 end
 
 -- ─── Helpers de texto ────────────────────────────────────────────────────────
@@ -1250,13 +1224,9 @@ local function eggInfo(e, hrp)
     local rarity = a and a.Rarity or (e.overhead and e.overhead.rarity)
     local rd = rarity and RaritiesData[rarity]
     local rcolor = rd and rd.Color or Color3.fromRGB(230, 230, 230)
-    local mutEmoji = e.mutation and emojiFor(MUTATION_EMOJI, e.mutation, "✨") or ""
-    local md = e.mutation and MutationsData[e.mutation]
 
     local traitsTxt = {}
-    for _, t in ipairs(e.traits) do
-        table.insert(traitsTxt, emojiFor(TRAIT_EMOJI, t, "🔹") .. " " .. esc(t))
-    end
+    for _, t in ipairs(e.traits) do table.insert(traitsTxt, traitRich(t)) end
 
     local timerTxt
     if type(e.hatchAt) == "number" then
@@ -1273,25 +1243,34 @@ local function eggInfo(e, hrp)
     local L = {}
     table.insert(L, ('<font size="15"><b>%s</b></font>'):format(esc(name)))
     if rarity then
-        table.insert(L, ('⭐ Raridade: <font color="#%s"><b>%s</b></font>'):format(hex(rcolor), esc(rarity)))
+        table.insert(L, ('Raridade: <font color="#%s"><b>%s</b></font>'):format(hex(rcolor), esc(rarity)))
     end
-    if e.mutation then
-        local mc = md and (md.Color or md.TextColor) or nil
-        table.insert(L, ('%s Mutação: <font color="#%s"><b>%s</b></font>'):format(mutEmoji, typeof(mc) == "Color3" and hex(mc) or "FFD54A", esc(e.mutation)))
-    else
-        table.insert(L, "⚪ Mutação: nenhuma")
+    table.insert(L, "Mutação: " .. (mutationRich(e.mutation) or "nenhuma"))
+    table.insert(L, ("Traits (%d): %s"):format(#e.traits, #traitsTxt > 0 and table.concat(traitsTxt, ", ") or "nenhum"))
+    -- o que o ovo choca (Datas.Animals[ovo].Egg.Animals)
+    if a and type(a.Egg) == "table" and type(a.Egg.Animals) == "table" then
+        local out = {}
+        for _, x in ipairs(a.Egg.Animals) do
+            if type(x) == "table" and x.Name then
+                local ad = AnimalsData[x.Name]
+                local r = ad and ad.Rarity and RaritiesData[ad.Rarity]
+                table.insert(out, ('<font color="#%s">%s</font> (%s%%)'):format(
+                    hex(r and r.Color), esc(ad and ad.DisplayName or x.Name), tostring(x.Chance or "?")))
+            end
+        end
+        if #out > 0 then table.insert(L, "Choca: " .. table.concat(out, ", ")) end
+        if a.Egg.Timer then table.insert(L, "Tempo de chocar: " .. esc(fmtTime(a.Egg.Timer))) end
     end
-    table.insert(L, ("🧬 Traits (%d): %s"):format(#e.traits, #traitsTxt > 0 and table.concat(traitsTxt, ", ") or "nenhum"))
-    if timerTxt then table.insert(L, "⏱️ Choca em: <b>" .. esc(timerTxt) .. "</b>") end
-    if type(e.despawn) == "number" then table.insert(L, "⌛ Some em: " .. esc(fmtTime(e.despawn))) end
+    if timerTxt then table.insert(L, "Choca em: <b>" .. esc(timerTxt) .. "</b>") end
+    if type(e.despawn) == "number" then table.insert(L, "Some em: " .. esc(fmtTime(e.despawn))) end
     if e.kind == "Plot" then
-        table.insert(L, "🏠 Plot de: <b>" .. esc(e.owner) .. "</b>")
+        table.insert(L, "Plot de: <b>" .. esc(e.owner) .. "</b>")
     else
-        table.insert(L, "🗺️ No mapa" .. (e.grabbed and ' — <font color="#FF5555">PEGO</font>' or " — livre"))
+        table.insert(L, "No mapa" .. (e.grabbed and ' — <font color="#FF5555">PEGO</font>' or " — livre"))
     end
-    if dist then table.insert(L, ("📏 Distância: %.0f studs"):format(dist)) end
-    table.insert(L, "📍 Posição: " .. fmtVal(pos))
-    if e.index and a and e.index ~= name then table.insert(L, "🔑 Index: " .. esc(e.index)) end
+    if dist then table.insert(L, ("Distância: %.0f studs"):format(dist)) end
+    table.insert(L, "Posição: " .. fmtVal(pos))
+    if e.index and a and e.index ~= name then table.insert(L, "Index: " .. esc(e.index)) end
 
     -- Tudo o que tiver no Datas.Animals (campos simples)
     if a then
@@ -1324,14 +1303,8 @@ local function eggInfo(e, hrp)
         end
     end
 
-    local short = ("%s%s%s"):format(
-        mutEmoji ~= "" and (mutEmoji .. " ") or "",
-        name,
-        #e.traits > 0 and (" " .. (function()
-            local t = {}
-            for _, x in ipairs(e.traits) do table.insert(t, emojiFor(TRAIT_EMOJI, x, "🔹")) end
-            return table.concat(t)
-        end)()) or "")
+    -- texto curto do ESP: nome + mutação colorida (os ícones vão em imagens)
+    local short = "<b>" .. esc(name) .. "</b>" .. (e.mutation and (" " .. mutationRich(e.mutation)) or "")
     return table.concat(L, "\n"), short, rcolor, timerTxt, dist
 end
 
@@ -1350,13 +1323,34 @@ local function makeEsp(e)
 
     local bb = Instance.new("BillboardGui")
     bb.Adornee = e.model.PrimaryPart or e.model:FindFirstChildWhichIsA("BasePart", true)
-    bb.Size = UDim2.new(0, 220, 0, 48)
+    bb.Size = UDim2.new(0, 220, 0, 72)
     bb.StudsOffset = Vector3.new(0, 4, 0)
     bb.AlwaysOnTop = true
     bb.MaxDistance = 2000
     bb.Parent = espFolder
+    -- linha de ícones do jogo: mutação + traits
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundTransparency = 1
+    row.Parent = bb
+    local rl = Instance.new("UIListLayout", row)
+    rl.FillDirection = Enum.FillDirection.Horizontal
+    rl.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    rl.Padding = UDim.new(0, 2)
+    local icons = { mutationIcon(e.mutation) }
+    for _, tr in ipairs(e.traits) do table.insert(icons, traitIcon(tr)) end
+    for _, img in pairs(icons) do
+        if img then
+            local i = Instance.new("ImageLabel")
+            i.Size = UDim2.new(0, 22, 0, 22)
+            i.BackgroundTransparency = 1
+            i.Image = tostring(img)
+            i.Parent = row
+        end
+    end
     local t = Instance.new("TextLabel")
-    t.Size = UDim2.fromScale(1, 1)
+    t.Size = UDim2.new(1, 0, 1, -22)
+    t.Position = UDim2.new(0, 0, 0, 22)
     t.BackgroundTransparency = 1
     t.TextColor3 = Color3.new(1, 1, 1)
     t.TextStrokeTransparency = 0.3
@@ -1389,7 +1383,7 @@ hubTitle.BackgroundTransparency = 1
 hubTitle.Font, hubTitle.TextSize = Enum.Font.GothamBold, 14
 hubTitle.TextColor3 = Color3.fromRGB(220, 220, 220)
 hubTitle.TextXAlignment = Enum.TextXAlignment.Left
-hubTitle.Text = "🥚 Eggs no servidor"
+hubTitle.Text = "Eggs no servidor"
 hubTitle.Parent = hub
 
 hubTitle.TextScaled = true
@@ -1514,7 +1508,7 @@ function startEggJob(e, card, button)
         local model = e.model
         local tgt = eggTarget(model)
         if not tgt() then
-            notify("🥚 " .. eggName .. " sumiu ou foi pego por alguém.", Color3.fromRGB(220, 60, 60))
+            notify("" .. eggName .. " sumiu ou foi pego por alguém.", Color3.fromRGB(220, 60, 60))
             return finish("Ovo indisponível.", false, false)
         end
 
@@ -1523,7 +1517,7 @@ function startEggJob(e, card, button)
         if not alive() then return end
         if not reached then
             if why == "lost" then
-                notify("🥚 " .. eggName .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.",
+                notify("" .. eggName .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.",
                     Color3.fromRGB(220, 60, 60))
             end
             -- stopFly já chama safeLand quando para no ar
@@ -1551,7 +1545,7 @@ function startEggJob(e, card, button)
             task.wait(1.3)
             if not alive() then return end
             if not tgt() then
-                notify("🥚 " .. eggName .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.",
+                notify("" .. eggName .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.",
                     Color3.fromRGB(220, 60, 60))
                 return finish("O ovo sumiu.", false, true)
             end
@@ -1583,8 +1577,8 @@ function startEggJob(e, card, button)
         eggRemote:FireServer()
         log("RequestEggPlace")
         if waitAttr("CarryingJumpEgg", false, 3) then
-            notify("✔ " .. eggName .. " colocado no seu plot!", Color3.fromRGB(60, 200, 100), 5)
-            finish("✔ Ovo colocado no plot!", true, false)
+            notify("" .. eggName .. " colocado no seu plot!", Color3.fromRGB(60, 200, 100), 5)
+            finish("Ovo colocado no plot!", true, false)
         else
             finish("Servidor não colocou o ovo (plot cheio?).", false, false)
         end
@@ -1594,7 +1588,7 @@ function startEggJob(e, card, button)
         local ok, err = pcall(run)
         if not ok then
             log("erro no job:", err)
-            notify("⚠ Erro no voo/coleta (veja F9). Levando você pro chão.", Color3.fromRGB(220, 60, 60))
+            notify("Erro no voo/coleta (veja F9). Levando você pro chão.", Color3.fromRGB(220, 60, 60))
             if flying then stopFly("error") end
             finish("Erro: " .. tostring(err), false, true)
         end
@@ -1690,12 +1684,8 @@ local function makeCard(e)
         i.Image = tostring(img)
         i.Parent = icons
     end
-    local md = e.mutation and MutationsData[e.mutation]
-    addIcon(md and md.Icon)
-    for _, t in ipairs(e.traits) do
-        local td = TraitsData[t]
-        addIcon(td and td.Icon)
-    end
+    addIcon(mutationIcon(e.mutation))
+    for _, t in ipairs(e.traits) do addIcon(traitIcon(t)) end
 
     return {
         card = card, cam = cam, center = center, radius = radius,
@@ -1732,9 +1722,9 @@ local function refresh()
             ent.esp = ent.esp or makeEsp(e)
             ent.esp.hl.FillColor = rcolor
             ent.esp.hl.OutlineColor = rcolor
-            ent.esp.label.Text = ("%s\n%s%s"):format(esc(short),
-                timerTxt and ("⏱️ " .. esc(timerTxt) .. "  ") or "",
-                dist and ("📏 %.0f"):format(dist) or "")
+            ent.esp.label.Text = ("%s\n%s%s"):format(short,
+                timerTxt and (esc(timerTxt) .. "  ") or "",
+                dist and ("%.0f studs"):format(dist) or "")
         elseif ent.esp then
             ent.esp.hl:Destroy(); ent.esp.bb:Destroy(); ent.esp = nil
         end
@@ -1753,7 +1743,7 @@ local function refresh()
     end
     local plot, mapa = 0, 0
     for _, e in ipairs(list) do if e.kind == "Plot" then plot = plot + 1 else mapa = mapa + 1 end end
-    hubTitle.Text = ("🥚 Eggs no servidor: %d   (🗺️ mapa %d · 🏠 plots %d)"):format(#list, mapa, plot)
+    hubTitle.Text = ("Eggs no servidor: %d   (mapa %d · plots %d)"):format(#list, mapa, plot)
 end
 
 onEspToggle = function() refresh() end
