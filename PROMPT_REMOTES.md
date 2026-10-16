@@ -29,6 +29,8 @@ Vou te mandar um dump de scripts do cliente (decompilados) e um script meu com u
 
 8. **Procure anti-cheat no dump.** Busque `Kick(`, `FireServer(0/0)`, checagens de GUI/propriedades, `debug.info`, `getfenv` e checagens de quem chamou nos módulos envolvidos. Me avise se algo puder ser acionado pelo meu código.
 
-9. **Diga o que não dá pra confirmar.** Se um módulo necessário não estiver no dump (ex.: `Packages/Net` faltando), diga isso. Não suponha como ele funciona.
+9. **Não rode código do jogo a partir da thread do executor.** Alguns jogos varrem `getfenv(1..10)` procurando `cloneref`/`getrenv`/`getupvalues`/`getnamecallmethod` (no Steal a Brainrot: `PlotController.lua:94-117`). Qualquer função do jogo chamada pelo meu script (ex.: `Net:RemoteFunction(...)`, flags, helpers) pode achar o ambiente do executor na pilha e me denunciar. Só leia instâncias/upvalues e chame `InvokeServer`/`FireServer` diretamente. Em hooks, use `task.defer` antes de mexer em GUI ou chamar qualquer coisa.
 
-10. **Explique na resposta:** de onde veio a remote (arquivo:linha), o GUID, os argumentos, e o que pode quebrar quando o jogo atualizar.
+10. **Diga o que não dá pra confirmar.** Se um módulo necessário não estiver no dump (ex.: `Packages/Net` faltando), diga isso. Não suponha como ele funciona.
+
+11. **Explique na resposta:** de onde veio a remote (arquivo:linha), o GUID, os argumentos, e o que pode quebrar quando o jogo atualizar.
