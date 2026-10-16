@@ -194,36 +194,28 @@ local function setStatus(msg, r, g, b, duration)
 end
 
 -- ─── INVITE REMOTE ────────────────────────────────────────────────────────────
--- Origem: ReplicatedStorage.Controllers.TradeController
---   linha 43 : local v_u_40 = Net:RemoteFunction("TradeService/Invite")
---   linha 355: function TradeController.SendInvite(_, userId, onResult)
---              upvalues: (copy) v_u_40, (copy) v_u_138, (copy) v_u_139
---   linha 357: v_u_40:InvokeServer("8fbe1594-7cef-4c29-94d1-a0e93adfa5a4", userId)
--- A remote é lida dos upvalues do próprio módulo; não usamos o pacote Net.
-local INVITE_GUID = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4"
+-- Só remotes: o envio é inviteRemote:InvokeServer(INVITE_GUID, userId),
+-- idêntico a TradeController.lua:357. Nenhuma função do jogo é chamada.
+--   TradeController.lua:43  Invite       = Net:RemoteFunction("TradeService/Invite")
+--   TradeController.lua:40  InviteResult = Net:RemoteEvent("TradeService/InviteResult")
+--   TradeController.lua:42  SearchUser   = Net:RemoteFunction("TradeService/SearchUser")
+local INVITE_GUID = "8fbe1594-7cef-4c29-94d1-a0e93adfa5a4" -- TradeController:357
 local SEARCH_GUID = "5bbf0ed7-abce-44dc-aec6-d72992f7e476" -- TradeController:615
-local SEARCH_COOLDOWN = 5 -- o jogo trava a busca por 5s (TradeController:629)
+local SEARCH_COOLDOWN = 5
+
+local function log(...) print("[TradeSender]", ...) end
 
 local getupvals = (debug and debug.getupvalues) or getupvalues
+local getconsts = (debug and debug.getconstants) or getconstants
 
-local TradeController
-do
-    local ok, mod = pcall(function()
-        return require(ReplicatedStorage:WaitForChild("Controllers"):WaitForChild("TradeController"))
-    end)
-    if ok and type(mod) == "table" and type(mod.SendInvite) == "function" then
-        TradeController = mod
-    end
-end
-
--- Retorna a única RemoteFunction entre os upvalues de fn (nil se houver 0 ou >1).
-local function onlyRemoteFunction(fn)
+-- Instância da classe pedida entre os upvalues de fn (só se for a única).
+local function remoteFromUpvalues(fn, class)
     if not getupvals or type(fn) ~= "function" then return nil end
     local ok, ups = pcall(getupvals, fn)
     if not ok or type(ups) ~= "table" then return nil end
     local found
     for _, v in pairs(ups) do
-        if typeof(v) == "Instance" and v:IsA("RemoteFunction") then
+        if typeof(v) == "Instance" and v:IsA(class) then
             if found and found ~= v then return nil end
             found = v
         end
@@ -231,22 +223,101 @@ local function onlyRemoteFunction(fn)
     return found
 end
 
-local inviteRemote = TradeController and onlyRemoteFunction(TradeController.SendInvite)
+-- 1) Lê o módulo já carregado (require devolve o cache, não executa nada).
+local TC
+do
+    local ok, mod = pcall(function()
+        local f = ReplicatedStorage:FindFirstChild("Controllers")
+        local m = f and f:FindFirstChild("TradeController")
+        return m and require(m)
+    end)
+    if ok and type(mod) == "table" then TC = mod end
+    log("TradeController:", TC and "ok" or ("falhou " .. tostring(mod)))
+end
 
--- SearchUser: upvalue nº 12 de _createPlayerList (v_u_39). Essa função tem
--- 3 RemoteFunctions como upvalue, então aqui vai por índice + validação.
-local searchRemote
-if TradeController and getupvals and type(TradeController._createPlayerList) == "function" then
-    local ok, ups = pcall(getupvals, TradeController._createPlayerList)
-    local v = ok and type(ups) == "table" and ups[12]
-    if typeof(v) == "Instance" and v:IsA("RemoteFunction") and v ~= inviteRemote then
-        -- Nome legível: tem que terminar exatamente em "TradeService/SearchUser".
-        -- Nome sem "/" (ofuscado): aceita pela posição do upvalue.
-        local suffix = "TradeService/SearchUser"
-        if v.Name:sub(-#suffix) == suffix or not v.Name:find("/", 1, true) then
-            searchRemote = v
+-- 2) getgc: acha a função que tem o GUID como constante e lê o upvalue dela.
+local function remoteFromGC(guid, class)
+    if not (getgc and getconsts and getupvals) then return nil end
+    local ok, list = pcall(getgc, false)
+    if not ok or type(list) ~= "table" then return nil end
+    for _, fn in ipairs(list) do
+        if type(fn) == "function" and (not islclosure or islclosure(fn)) then
+            local cOk, consts = pcall(getconsts, fn)
+            if cOk and type(consts) == "table" and table.find(consts, guid) then
+                local r = remoteFromUpvalues(fn, class)
+                if r then return r end
+            end
         end
     end
+    return nil
+end
+
+-- 3) Nome exato nas pastas do Net (só GetChildren, sem varrer o RS inteiro).
+--    Aceita "TradeService/Invite" ou "<prefixo>/TradeService/Invite" (ex.: RF/...).
+local function remoteByName(path, class)
+    local folders = {}
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if pk then
+        if pk:FindFirstChild("Net") then table.insert(folders, pk.Net) end
+        local idx = pk:FindFirstChild("_Index")
+        if idx then
+            for _, c in ipairs(idx:GetChildren()) do
+                if c.Name:lower():sub(1, 13) == "sleitnick_net" and c:FindFirstChild("net") then
+                    table.insert(folders, c.net)
+                end
+            end
+        end
+    end
+    for _, folder in ipairs(folders) do
+        for _, c in ipairs(folder:GetChildren()) do
+            if c:IsA(class) and (c.Name == path or c.Name:sub(-(#path + 1)) == "/" .. path) then
+                return c
+            end
+        end
+    end
+    return nil
+end
+
+local function resolve(label, class, tcField, upIndex, guid, path)
+    local r, how
+    if TC and type(TC[tcField]) == "function" then
+        if upIndex then
+            local ok, v = pcall(function() return getupvals(TC[tcField])[upIndex] end)
+            if ok and typeof(v) == "Instance" and v:IsA(class) then r = v end
+        else
+            r = remoteFromUpvalues(TC[tcField], class)
+        end
+        how = r and ("upvalue de " .. tcField)
+    end
+    if not r and guid then r = remoteFromGC(guid, class); how = r and "getgc" end
+    if not r then r = remoteByName(path, class); how = r and "nome exato" end
+    log(label, r and ("ok via " .. how .. " -> " .. r:GetFullName()) or "NÃO encontrada")
+    return r
+end
+
+local inviteRemote = resolve("Invite", "RemoteFunction", "SendInvite", nil, INVITE_GUID, "TradeService/Invite")
+local resultRemote = resolve("InviteResult", "RemoteEvent", "Start", nil, nil, "TradeService/InviteResult")
+-- SearchUser = upvalue 12 de _createPlayerList (v_u_39); valida a classe e
+-- garante que não é a mesma da Invite.
+local searchRemote = resolve("SearchUser", "RemoteFunction", "_createPlayerList", 12, nil, "TradeService/SearchUser")
+if searchRemote == inviteRemote then searchRemote = nil end
+
+-- InviteResult: (inviteId: string, delivered: boolean, message: string?)
+-- mesmo filtro de TradeController:2127.
+local pending, early = {}, {}
+if resultRemote then
+    resultRemote.OnClientEvent:Connect(function(id, delivered, message)
+        if typeof(id) ~= "string" or typeof(delivered) ~= "boolean" then return end
+        if message ~= nil and typeof(message) ~= "string" then return end
+        local cb = pending[id]
+        if cb then
+            pending[id] = nil
+            cb(delivered, message)
+        else
+            early[id] = { delivered, message }
+            task.delay(5, function() early[id] = nil end)
+        end
+    end)
 end
 
 if not inviteRemote then
@@ -263,6 +334,12 @@ local function resetBtn()
     busy = false
 end
 
+local function fail(msg, d)
+    setStatus("✕ " .. msg, 220, 60, 60, d or 4)
+    log("falha:", msg)
+    resetBtn()
+end
+
 sendBtn.MouseButton1Click:Connect(function()
     if busy then return end
     local name = tb.Text:match("^%s*(.-)%s*$")
@@ -271,10 +348,8 @@ sendBtn.MouseButton1Click:Connect(function()
         setStatus("⚠ Digite um username!", 220, 80, 80, 3)
         return
     end
-
     if not inviteRemote then
-        setStatus("✕ Remote não encontrada.", 220, 60, 60, 4)
-        return
+        return fail("Remote não encontrada.")
     end
 
     busy = true
@@ -285,89 +360,74 @@ sendBtn.MouseButton1Click:Connect(function()
     local ok, uid = pcall(function()
         return Players:GetUserIdFromNameAsync(name)
     end)
-
     if not ok or typeof(uid) ~= "number" then
-        setStatus("✕ Jogador não encontrado.", 220, 60, 60, 3)
-        resetBtn()
-        return
+        return fail("Jogador não encontrado.", 3)
     end
-
     if uid == LP.UserId then
-        setStatus("✕ Não dá pra mandar trade pra você mesmo.", 220, 60, 60, 3)
-        resetBtn()
-        return
+        return fail("Não dá pra mandar trade pra você mesmo.", 3)
     end
 
-    -- Mesmas condições do jogo: canInvite e inGame.
-    -- Quem está no servidor: inGame = true, canInvite = true (TradeController:533).
-    -- Quem está fora: pergunta ao servidor via SearchUser (TradeController:615).
-    if not Players:GetPlayerByUserId(uid) then
-        if not searchRemote then
-            setStatus("✕ Jogador fora do servidor (SearchUser não encontrada).", 220, 60, 60, 4)
-            resetBtn()
-            return
-        end
+    -- Jogador fora do servidor: o jogo checa SearchUser antes (inGame/canInvite).
+    if not Players:GetPlayerByUserId(uid) and searchRemote then
         local remaining = SEARCH_COOLDOWN - (os.clock() - lastSearch)
         if remaining > 0 then
-            setStatus(("⏳ Aguarde %.0fs para buscar de novo."):format(remaining), 220, 160, 60, 3)
-            resetBtn()
-            return
+            setStatus(("⏳ Aguarde %.0fs."):format(remaining), 220, 160, 60, 3)
+            return resetBtn()
         end
         lastSearch = os.clock()
-
         local sOk, found, inGame, canInvite = pcall(function()
             return searchRemote:InvokeServer(SEARCH_GUID, uid)
         end)
+        log("SearchUser ->", sOk, found, inGame, canInvite)
         if not (sOk and found) then
-            local msg = typeof(found) == "string" and found
+            return fail(typeof(found) == "string" and found
                 or typeof(inGame) == "string" and inGame
-                or "Falha ao buscar jogador."
-            setStatus("✕ " .. msg, 220, 60, 60, 4)
-            resetBtn()
-            return
+                or "Falha ao buscar jogador.")
         end
-        if not inGame then
-            setStatus("✕ " .. name .. " não está no jogo.", 220, 60, 60, 4)
-            resetBtn()
-            return
-        end
-        if not canInvite then
-            setStatus("✕ " .. name .. " não aceita trades.", 220, 60, 60, 4)
-            resetBtn()
-            return
-        end
+        if not inGame then return fail(name .. " não está no jogo.") end
+        if not canInvite then return fail(name .. " não aceita trades.") end
     end
 
     setStatus("Enviando invite...", 130, 130, 130)
     sendBtn.Text = "ENVIANDO..."
 
-    -- Resultado final chega por TradeService/InviteResult, que o próprio
-    -- TradeController escuta (Start, linha 2126) e repassa a este callback.
+    -- Chamada idêntica à do jogo: retorno (ok, erro, inviteId).
+    local iOk, accepted, err, inviteId = pcall(function()
+        return inviteRemote:InvokeServer(INVITE_GUID, uid)
+    end)
+    log("Invite ->", iOk, accepted, err, inviteId)
+
+    if not iOk then return fail("Erro ao chamar remote: " .. tostring(accepted)) end
+    if not accepted then
+        return fail(typeof(err) == "string" and err or "Servidor recusou o invite.")
+    end
+
     local done = false
     local function onResult(delivered, message)
         if done then return end
         done = true
         if delivered then
             setStatus("✔ Invite enviado para " .. name, 60, 200, 100, 5)
+            resetBtn()
         else
-            setStatus("✕ " .. (typeof(message) == "string" and message or "Invite não entregue."), 220, 60, 60, 5)
+            fail(typeof(message) == "string" and message or "Invite não entregue.", 5)
         end
-        resetBtn()
     end
 
-    -- Chama a função do jogo: mesma remote, mesmo GUID, userId como number.
-    local callOk, accepted, err = pcall(TradeController.SendInvite, TradeController, uid, onResult)
-
-    if not callOk then
-        onResult(false, "Falhou ao enviar invite.")
-    elseif not accepted then
-        onResult(false, err)
-    else
-        -- Servidor aceitou o pedido; esperando o InviteResult.
-        task.delay(10, function()
-            if not done then
-                onResult(false, "Sem resposta do servidor.")
-            end
-        end)
+    -- Sem inviteId (ou sem InviteResult): o jogo já considera entregue.
+    if typeof(inviteId) ~= "string" or not resultRemote then
+        return onResult(true)
     end
+    local e = early[inviteId]
+    if e then
+        early[inviteId] = nil
+        return onResult(e[1], e[2])
+    end
+    pending[inviteId] = onResult
+    task.delay(10, function()
+        if not done then
+            pending[inviteId] = nil
+            onResult(false, "Sem resposta do servidor.")
+        end
+    end)
 end)
