@@ -249,9 +249,11 @@ status.Text, status.TextColor3 = "", Color3.fromRGB(130, 130, 130)
 status.Font, status.TextSize, status.TextWrapped = Enum.Font.Gotham, 11, true
 status.Parent = frame
 
+local statusHook -- espelha o status na Chilli Library quando ela estiver ativa
 local function setStatus(msg, r, g, b)
     status.Text = msg
     status.TextColor3 = Color3.fromRGB(r or 130, g or 130, b or 130)
+    if statusHook then pcall(statusHook, msg) end
 end
 
 -- ─── NOTIFICAÇÕES (topo da tela, somem depois de 10s) ─────────────────────────
@@ -772,12 +774,15 @@ end)
 local alive = true
 local autoCollect, currentJob, cancelJob, startEggJob -- definidos no Hub
 local conns = {}
-closeBtn.MouseButton1Click:Connect(function()
+local chilliWindow -- janela da Chilli, se carregou
+local function shutdown()
     alive = false
     pcall(function() if cancelJob then cancelJob() else stopFly("cancel") end end)
-    for _, c in ipairs(conns) do c:Disconnect() end
-    sg:Destroy()
-end)
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    pcall(function() sg:Destroy() end)
+    if chilliWindow then pcall(function() chilliWindow:Destroy() end) end
+end
+closeBtn.MouseButton1Click:Connect(shutdown)
 
 -- Farm level com vários métodos. Cada um é testado por um tempo; se o XP
 -- (barra do jogo) não subir, passa pro próximo. O que funcionar fica ativo.
@@ -868,6 +873,7 @@ farmInfo.Text = "Farm desligado"
 farmInfo.Parent = frame
 Instance.new("UICorner", farmInfo).CornerRadius = UDim.new(0, 6)
 
+local farmHook -- espelha o painel do farm na Chilli
 local function updateFarmInfo(padDist)
     local lvl, cur, need, max = readLevel()
     if lvl and not farm.startLevel then farm.startLevel = lvl end
@@ -879,6 +885,7 @@ local function updateFarmInfo(padDist)
     farmInfo.Text = ('<b>%s</b> +%d · %d pulos · pad %s\n%s'):format(
         lvTxt, (lvl and farm.startLevel) and (lvl - farm.startLevel) or 0, launches,
         padDist and ("%.0f"):format(padDist) or "—", state)
+    if farmHook then pcall(farmHook, farmInfo.Text) end
 end
 
 local function resetFarm()
@@ -1773,5 +1780,236 @@ table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt
         end
     end
 end)))
+
+-- ═══ CHILLI LIBRARY ══════════════════════════════════════════════════════════
+-- Painel principal na Chilli Library. Se ela não carregar por qualquer motivo,
+-- o painel próprio do script (o antigo) continua funcionando como reserva.
+-- Uso da API conforme o script de exemplo da própria lib:
+--   bootstrap(key) → Chilli:CreateWindow → window:CreateTab → tab:CreateSection
+--   → section:CreateToggle/CreateInput/CreateButton/CreateText → Chilli:Finalize
+local CHILLI_KEY = "CPC1:7qN4vK9mP2xR8sT5wY3aD6fH1jL0cB7eG4uZ9iM2"
+local CHILLI_URL = "https://raw.githubusercontent.com/tienkhanh1/spicy/refs/heads/main/Chilli%20Library"
+local CHILLI_FILES = { "chilli_library_v3nt.txt", "chilli_library_v3nt.lua" }
+local HUB_NAME = "V3nt - Jump For Egg"
+
+local function stripRich(t) return (tostring(t):gsub("<[^>]->", "")) end
+
+-- Troca a aranha 3D do botão lateral por um "V" (vale pra versão oficial da lib).
+local function patchLauncher()
+    local roots = {}
+    pcall(function() table.insert(roots, gethui()) end)
+    pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
+    for _, root in ipairs(roots) do
+        local launcher = root:FindFirstChild("ChilliLeftCenter")
+        local vp = launcher and launcher:FindFirstChild("ChilliViewport", true)
+        if vp then
+            for _, d in ipairs(vp:GetDescendants()) do
+                if d:IsA("BasePart") then d.Transparency = 1 end
+            end
+            if not vp:FindFirstChild("V3ntIcon") then
+                local v = Instance.new("TextLabel")
+                v.Name = "V3ntIcon"
+                v.AnchorPoint = Vector2.new(0.5, 0.5)
+                v.Position = UDim2.fromScale(0.5, 0.5)
+                v.Size = UDim2.fromScale(0.9, 0.9)
+                v.BackgroundTransparency = 1
+                v.Text = "V"
+                v.TextScaled = true
+                v.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy)
+                v.TextColor3 = Color3.new(1, 1, 1)
+                v.ZIndex = vp.ZIndex + 1
+                v.Parent = vp
+                local st = Instance.new("UIStroke")
+                st.Color, st.Thickness = Color3.new(0, 0, 0), 2
+                st.Parent = v
+            end
+            local btn = vp.Parent
+            local txt = btn and btn:FindFirstChild("Txt")
+            if txt and txt:IsA("TextLabel") then txt.Text = "V3nt" end
+            return true
+        end
+    end
+    return false
+end
+
+local function loadChilli()
+    -- 1º: cópia local com o "V" (pasta workspace do executor); 2º: versão oficial
+    local sources = {}
+    for _, name in ipairs(CHILLI_FILES) do
+        local ok, content = pcall(function()
+            if isfile and isfile(name) then return readfile(name) end
+        end)
+        if ok and type(content) == "string" and #content > 1000 then
+            table.insert(sources, { name = name, src = content })
+        end
+    end
+    table.insert(sources, { name = "oficial (GitHub)", get = function() return game:HttpGet(CHILLI_URL) end })
+
+    for _, s in ipairs(sources) do
+        local ok, lib = pcall(function()
+            local src = s.src or s.get()
+            if src:sub(1, 3) == "\239\187\191" then src = src:sub(4) end
+            local chunk, err = loadstring(src)
+            assert(chunk, err)
+            local bootstrap = chunk()
+            assert(type(bootstrap) == "function", "bootstrap inválido")
+            local Chilli = bootstrap(CHILLI_KEY)
+            assert(type(Chilli) == "table" and type(Chilli.CreateWindow) == "function", "API inválida")
+            return Chilli
+        end)
+        log("Chilli (" .. s.name .. "):", ok and "ok" or tostring(lib))
+        if ok then return lib end
+    end
+end
+
+-- tenta os setters que a lib pode ter (o exemplo também não sabia qual existe)
+local function setOptionText(opt, text)
+    if type(opt) ~= "table" then return end
+    for _, m in ipairs({ "SetText", "Set", "SetValue", "SetTitle", "Update" }) do
+        if type(opt[m]) == "function" then
+            if pcall(opt[m], opt, text) then return true end
+        end
+    end
+    return false
+end
+
+local function buildChilliUI()
+    local Chilli = loadChilli()
+    if not Chilli then return false end
+
+    pcall(function()
+        Chilli.ManualQuickDefaults = { PinnedFeatures = {}, Keybinds = {}, PinGroups = {}, LeftCenterHidden = false }
+    end)
+
+    local function section(tab, name)
+        for _, ex in ipairs(tab.Sections or {}) do
+            if ex.Name == name then return ex end
+        end
+        return tab:CreateSection({ Name = name, Expanded = true })
+    end
+
+    local window = Chilli:CreateWindow({ Name = HUB_NAME, DefaultTab = "Main" })
+    chilliWindow = window
+
+    local function toggle(sec, key, name, note, enabled, onChange)
+        sec:CreateToggle({
+            Name = name,
+            Note = enabled and note or (note .. " (remote não encontrada)"),
+            Default = false,
+            Callback = safe("toggle " .. key, function(v)
+                if not enabled then
+                    if v then notify(name .. ": remote não encontrada no jogo.", Color3.fromRGB(220, 60, 60)) end
+                    toggles[key] = false
+                    return
+                end
+                toggles[key] = v == true
+                if onChange then onChange(toggles[key]) end
+            end),
+        })
+    end
+
+    -- Farm
+    local farmTab = window:CreateTab({ Name = "Farm", SectionsExpanded = true })
+    local farmSec = section(farmTab, "Farm Level")
+    toggle(farmSec, "farm", "Farm level", "Pulos no trampolim mais próximo. Testa 3 métodos e fica com o que der XP.", launchRemote ~= nil)
+    local farmText = farmSec:CreateText({ Name = "Farm", Text = "Farm desligado", Config = false })
+    local baseSec = section(farmTab, "Base")
+    toggle(baseSec, "egg", "Auto colocar ovo", "Coloca o ovo que você está carregando no seu plot.", eggRemote ~= nil)
+    toggle(baseSec, "brainrot", "Auto colocar brainrot", "Coloca o brainrot que você está carregando no seu plot.", brainRemote ~= nil)
+    toggle(baseSec, "upgrade", "Auto upgrade trampolim", "Compra o próximo tier quando a placa liberar.", upgradeRemote ~= nil)
+
+    -- Eggs
+    local eggTab = window:CreateTab({ Name = "Eggs", SectionsExpanded = true })
+    local eggSec = section(eggTab, "Eggs")
+    toggle(eggSec, "esp", "ESP Eggs", "Contorno, nome, mutação, traits e timer em cada ovo.", true,
+        function(v) if onEspToggle then onEspToggle(v) end end)
+    toggle(eggSec, "hub", "Hub de Eggs", "Lista de ovos com preview 3D e todas as informações.", true,
+        function(v) if onHubToggle then onHubToggle(v) end end)
+    eggSec:CreateToggle({
+        Name = "Fly coletar + colocar",
+        Note = "No VOAR do hub: pega o ovo e leva pro seu plot.",
+        Default = false,
+        Callback = safe("autoCollect", function(v)
+            autoCollect = v == true
+            pcall(paintAuto)
+        end),
+    })
+    local flySec = section(eggTab, "Fly")
+    flySec:CreateInput({
+        Name = "Velocidade do fly",
+        Note = "De 10 a 999. Se o servidor puxar de volta, o fly reduz sozinho.",
+        Placeholder = tostring(FLY.speed),
+        Default = tostring(FLY.speed),
+        MaxLength = 4,
+        Callback = safe("fly speed", function(value)
+            local n = tonumber(value)
+            if n then
+                FLY.speed = math.clamp(n, 10, 999)
+                pcall(function() speedBox.Text = tostring(FLY.speed) end)
+            end
+        end),
+    })
+    flySec:CreateButton({
+        Name = "Parar voo",
+        ButtonText = "Parar",
+        Callback = safe("parar voo", function() if cancelJob then cancelJob() else stopFly("cancel") end end),
+    })
+    flySec:CreateButton({
+        Name = "Ir pro chão",
+        ButtonText = "Pousar",
+        Callback = safe("pousar", function() task.spawn(safeLand) end),
+    })
+
+    -- Status
+    local infoTab = window:CreateTab({ Name = "Status", SectionsExpanded = true })
+    local infoSec = section(infoTab, "Status")
+    local statusText = infoSec:CreateText({ Name = "Status", Text = "Pronto", Config = false })
+    infoSec:CreateText({
+        Name = "Remotes",
+        Text = ("Launch %s · Ovo %s · Brainrot %s · Upgrade %s · Grab %s"):format(
+            launchRemote and "ok" or "X", eggRemote and "ok" or "X", brainRemote and "ok" or "X",
+            upgradeRemote and "ok" or "X", grabRemote and "ok" or "X"),
+        Config = false,
+    })
+    infoSec:CreateButton({
+        Name = "Fechar script",
+        ButtonText = "Fechar",
+        Callback = safe("fechar", shutdown),
+    })
+
+    -- espelha status e farm (no máximo 2x por segundo)
+    local lastS, lastF = 0, 0
+    statusHook = function(msg)
+        if os.clock() - lastS < 0.5 then return end
+        lastS = os.clock()
+        setOptionText(statusText, stripRich(msg))
+    end
+    farmHook = function(txt)
+        if os.clock() - lastF < 0.5 then return end
+        lastF = os.clock()
+        setOptionText(farmText, stripRich(txt))
+    end
+
+    Chilli:Finalize({ Window = window, MainTab = window:GetDefaultTab(), ShowMainTab = false })
+
+    -- "V" no lugar da aranha (tenta algumas vezes, a lib monta o botão depois)
+    task.spawn(function()
+        for _ = 1, 20 do
+            local ok, done = pcall(patchLauncher)
+            if ok and done then break end
+            task.wait(0.5)
+        end
+    end)
+    return true
+end
+
+local okUI, uiResult = pcall(buildChilliUI)
+if okUI and uiResult then
+    frame.Visible = false -- painel antigo fica só como reserva
+    log("Painel: Chilli Library")
+else
+    log("Chilli indisponível, usando o painel próprio:", tostring(uiResult))
+    notify("Chilli Library não carregou. Usando o painel reserva.", Color3.fromRGB(220, 160, 60), 6)
+end
 
 setStatus("Pronto. Veja o F9 se algo ficar cinza.")
