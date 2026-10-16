@@ -175,6 +175,82 @@ local function nearestPad(hrp)
     return best, bestD
 end
 
+-- ─── FLY (movimento físico até um ponto) ──────────────────────────────────────
+-- Em vez de mudar o CFrame (TP), empurra o HumanoidRootPart com LinearVelocity,
+-- igual o jogo faz no trampolim (launchFromPad, linha 555). O personagem passa
+-- por todas as posições do caminho, com noclip enquanto voa.
+local FLY = { speed = 60 }
+local flying = nil -- { conn, noclip, att, lv, onDone }
+
+local function stopFly(reached)
+    local f = flying
+    if not f then return end
+    flying = nil
+    f.conn:Disconnect()
+    f.noclip:Disconnect()
+    f.lv:Destroy()
+    f.att:Destroy()
+    for part, cc in pairs(f.collide) do
+        if part.Parent then part.CanCollide = cc end
+    end
+    local _, hrp = getChar()
+    if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
+    if f.onDone then task.spawn(f.onDone, reached == true) end
+end
+
+-- getTarget: função que devolve a posição alvo (Vector3) ou nil se sumiu.
+local function flyTo(getTarget, onDone)
+    stopFly(false)
+    local char, hrp, hum = getChar()
+    if not hrp then return false end
+    local target = getTarget()
+    if not target then return false end
+
+    local att = Instance.new("Attachment")
+    att.Name = "JFE_FlyAtt"
+    att.Parent = hrp
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "JFE_Fly"
+    lv.Attachment0 = att
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.MaxForce = math.huge
+    lv.VectorVelocity = Vector3.zero
+    lv.Parent = hrp
+
+    local collide = {}
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then collide[d] = d.CanCollide end
+    end
+    local noclip = RunService.Stepped:Connect(function()
+        for part in pairs(collide) do
+            if part.Parent then part.CanCollide = false end
+        end
+    end)
+
+    local deadline = os.clock() + (target - hrp.Position).Magnitude / FLY.speed * 2 + 5
+    local conn = RunService.Heartbeat:Connect(function()
+        local _, h, hm = getChar()
+        local t = getTarget()
+        if not h or not t or h ~= hrp or os.clock() > deadline then
+            stopFly(false)
+            return
+        end
+        local delta = t - h.Position
+        local dist = delta.Magnitude
+        if dist < 1.5 then
+            stopFly(true)
+            return
+        end
+        -- desacelera no fim pra não passar do ponto
+        lv.VectorVelocity = delta.Unit * math.min(FLY.speed, dist * 6)
+        if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
+    end)
+
+    flying = { conn = conn, noclip = noclip, att = att, lv = lv, collide = collide, onDone = onDone }
+    return true
+end
+
 -- ─── GUI ──────────────────────────────────────────────────────────────────────
 local root = gethui and gethui() or game:GetService("CoreGui")
 local old = root:FindFirstChild("JumpForEggsGUI")
@@ -185,8 +261,8 @@ sg.Name, sg.ResetOnSpawn, sg.ZIndexBehavior = "JumpForEggsGUI", false, Enum.ZInd
 sg.Parent = root
 
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 300, 0, 380)
-frame.Position         = UDim2.new(0, 20, 0.5, -190)
+frame.Size             = UDim2.new(0, 300, 0, 420)
+frame.Position         = UDim2.new(0, 20, 0.5, -210)
 frame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
 frame.BorderSizePixel  = 0
 frame.Active, frame.Draggable = true, true
@@ -274,11 +350,37 @@ local onEspToggle, onHubToggle
 makeToggle("esp",      "ESP Eggs",               252, true, function(v) if onEspToggle then onEspToggle(v) end end)
 makeToggle("hub",      "Hub de Eggs",            292, true, function(v) if onHubToggle then onHubToggle(v) end end)
 
+-- Velocidade do fly
+local speedLbl = Instance.new("TextLabel")
+speedLbl.Size, speedLbl.Position = UDim2.new(0.55, -12, 0, 34), UDim2.new(0, 12, 0, 332)
+speedLbl.BackgroundTransparency = 1
+speedLbl.Text = "Velocidade do fly"
+speedLbl.TextColor3 = Color3.fromRGB(160, 160, 160)
+speedLbl.Font, speedLbl.TextSize = Enum.Font.Gotham, 12
+speedLbl.TextXAlignment = Enum.TextXAlignment.Left
+speedLbl.Parent = frame
+local speedBox = Instance.new("TextBox")
+speedBox.Size, speedBox.Position = UDim2.new(0.45, -12, 0, 34), UDim2.new(0.55, 0, 0, 332)
+speedBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+speedBox.BorderSizePixel = 0
+speedBox.Text = tostring(FLY.speed)
+speedBox.TextColor3 = Color3.fromRGB(230, 230, 230)
+speedBox.Font, speedBox.TextSize = Enum.Font.GothamBold, 13
+speedBox.ClearTextOnFocus = false
+speedBox.Parent = frame
+Instance.new("UICorner", speedBox).CornerRadius = UDim.new(0, 6)
+speedBox.FocusLost:Connect(function()
+    local n = tonumber(speedBox.Text)
+    if n then FLY.speed = math.clamp(n, 10, 500) end
+    speedBox.Text = tostring(FLY.speed)
+end)
+
 -- ─── LOOPS ────────────────────────────────────────────────────────────────────
 local alive = true
 local conns = {}
 closeBtn.MouseButton1Click:Connect(function()
     alive = false
+    stopFly(false)
     for _, c in ipairs(conns) do c:Disconnect() end
     sg:Destroy()
 end)
@@ -306,10 +408,17 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
     local over = isOverPad(pad, pad.CFrame:PointToObjectSpace(hrp.Position), margin, height)
 
     if not over and toggles.tp then
-        local top = pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + hum.HipHeight + hrp.Size.Y / 2, 0)
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.CFrame = CFrame.new(top.Position) * (hrp.CFrame - hrp.CFrame.Position)
-        return -- espera o próximo frame pra checar de novo
+        -- Só voa se estiver fora do pad na horizontal (no ar depois do pulo
+        -- você continua em cima dele e não precisa voar de volta).
+        local rel = pad.CFrame:PointToObjectSpace(hrp.Position)
+        local outside = not isOverPad(pad, Vector3.new(rel.X, 0, rel.Z), 1, height)
+        if outside and not flying then
+            flyTo(function()
+                if not pad.Parent then return nil end
+                return (pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + hum.HipHeight + hrp.Size.Y / 2, 0)).Position
+            end)
+        end
+        return
     end
 
     local velY = hrp.AssemblyLinearVelocity.Y
@@ -797,14 +906,25 @@ local function makeCard(e)
     tp.BorderSizePixel = 0
     tp.Font, tp.TextSize = Enum.Font.GothamBold, 11
     tp.TextColor3 = Color3.new(1, 1, 1)
-    tp.Text = "TP"
+    tp.Text = "VOAR"
     tp.Parent = card
     Instance.new("UICorner", tp).CornerRadius = UDim.new(0, 5)
     tp.MouseButton1Click:Connect(function()
-        local _, hrp = getChar()
-        if hrp and e.model.Parent then
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.CFrame = CFrame.new(e.model:GetPivot().Position + Vector3.new(0, 5, 0))
+        if flying and flying.card == card then
+            stopFly(false)
+            return
+        end
+        local model = e.model
+        local ok = flyTo(function()
+            if not model.Parent then return nil end
+            return model:GetPivot().Position + Vector3.new(0, 4, 0)
+        end, function(reached)
+            if tp.Parent then tp.Text = "VOAR" end
+            setStatus(reached and "Chegou no ovo." or "Voo cancelado.", reached and 60 or 220, reached and 200 or 160, reached and 100 or 60)
+        end)
+        if ok then
+            flying.card = card
+            tp.Text = "PARAR"
         end
     end)
 
