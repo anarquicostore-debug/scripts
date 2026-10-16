@@ -1,26 +1,35 @@
 --[[
-	Steal a Brainrot - Sammy Top Messages + Code Redeemer (via remote)
+	Steal a Brainrot - Sammy Top Messages + Code Redeemer (fluxo do próprio jogo)
 
-	Baseado no dump:
-	  • Controllers/CodesController.lua:37
-	      Net:RemoteFunction("d193b9bf-8b44-42af-b4b2-9c77847ce1e9"):InvokeServer(code)
-	      -> retorna (sucesso, mensagem). Código filtrado para [%w], máx. 50 chars.
-	  • Controllers/NotificationController.lua:18
-	      Net:RemoteEvent("NotificationService/Notify") -> mensagens "Top" (admins)
+	Baseado no dump (sab.zip):
+	  • Controllers/CodesController.lua:20-60 (submitCode, local de initTextbox)
+	      linha 37: v_u_7:RemoteFunction("d193b9bf-8b44-42af-b4b2-9c77847ce1e9"):InvokeServer(v_u_20)
+	      -> retorna (sucesso, mensagem) e mostra v_u_5:Success/Error.
+	      Checagens: trava v_u_19, TextBox.Active, #code >= 1; cooldown de 0.5s.
+	      Texto filtrado para [%w], máx. 50 chars (linhas 72-80).
+	  • Controllers/NotificationController.lua:18 / :153
+	      Net:RemoteEvent("NotificationService/Notify") -> Notify(text, duration,
+	      sound, position, userId, ...) — "Top" + userId = mensagem de admin.
 	  • TextChatController.lua:29 / HudController.lua:497: UserId 2678001507 = Sammy
 
-	Como a remote é obtida (regras do PROMPT_REMOTES.md):
-	  NÃO chamamos Net:RemoteFunction(...) nem nada do pacote Net. Fazemos
-	  require do CodesController (já carregado, só volta a tabela em cache) e
-	  lemos a RemoteFunction que ele já guarda via debug.getupvalues.
-	  Se não houver exatamente UMA RemoteFunction lá, para com
-	  "Remote não encontrada" em vez de chutar outra.
+	Por que NÃO usamos a remote direto:
+	  O CodesController não guarda a RemoteFunction: ele chama o Net na hora
+	  (linha 37). Não existe instância em upvalue para ler, e as regras
+	  proíbem chamar Net:RemoteFunction(...) por conta própria (o Packages/Net
+	  nem está no dump). Então o resgate roda a própria função submitCode do
+	  jogo, achada assim:
+	    getconnections(PlayerGui.Codes.Codes.CodeRedeem.TextBox.FocusLost)
+	      -> handler da linha 61 (upvalue único: submitCode)
+	  e validada (um dos upvalues do submitCode tem que ser essa TextBox).
+	  O jogo faz a chamada idêntica, com as checagens e o cooldown dele.
+	  O resultado é lido do Success/Error que ele mostra (hook em Notify).
 
-	  ⚠ Não confirmado sem o dump: se o CodesController:37 chama
-	  Net:RemoteFunction(GUID) inline (sem guardar a instância num upvalue),
-	  não existe instância para ler e o script vai mostrar "Remote não
-	  encontrada". Nesse caso mande o dump do CodesController (com os
-	  comentários "-- upvalues:") para ajustar a função que deve ser lida.
+	Anti-cheat visto no dump (nada disso é tocado aqui):
+	  • PlotController.GetMyPlot/GetPlots: getfenv(1..10) procura
+	    cloneref/getrenv/getupvalues/getnamecallmethod em quem chamou e põe
+	    workspace.Gravity = 1000. NUNCA chame PlotController a partir do executor.
+	  • HudController.lua:533-537: se a label de marca d'água for alterada,
+	    Kick + FireServer(0/0) + trava o cliente. Não mexa nela.
 
 	Uso por outro script: getgenv().SammyRedeem("CODIGO")
 ]]
@@ -34,10 +43,11 @@ local LP = Players.LocalPlayer
 local genv = getgenv and getgenv() or _G
 
 local SAMMY_ID    = 2678001507
-local REDEEM_GUID = "d193b9bf-8b44-42af-b4b2-9c77847ce1e9" -- só referência (nome usado pelo jogo no Net); não é passado ao InvokeServer
 local MAX_AUTO_PER_MSG = 3 -- no máx. 3 tentativas por mensagem do topo
 local MAX_LOG     = 60
 local REDEEM_GAP  = 1.2 -- segundos entre resgates (o jogo usa 0.5s de cooldown)
+local SFX_SUCCESS = "Sounds.Sfx.Success" -- NotificationController.lua:45
+local SFX_ERROR   = "Sounds.Sfx.Error"   -- NotificationController.lua:41
 
 local getupvalues = debug.getupvalues or getupvalues
 
@@ -341,7 +351,7 @@ pcall(function()
 end)
 
 -- 1) Hook em NotificationController.Notify (pega tudo que vai pro topo)
-if genv.__SammyNotifyHooked then
+if genv.__SammyNotifyHookedV2 then
     captureMode = "hook"
 elseif NotificationController and hookfunction and type(NotificationController.Notify) == "function" then
     local ok = pcall(function()
@@ -349,11 +359,13 @@ elseif NotificationController and hookfunction and type(NotificationController.N
         original = hookfunction(NotificationController.Notify, function(self, text, duration, sound, position, userId, ...)
             local cb = genv.__SammyTopCallback
             if cb then pcall(cb, text, position, userId) end
+            local rr = genv.__SammyRedeemResult -- só existe durante um resgate
+            if rr then pcall(rr, text, sound) end
             return original(self, text, duration, sound, position, userId, ...)
         end)
     end)
     if ok then
-        genv.__SammyNotifyHooked = true
+        genv.__SammyNotifyHookedV2 = true
         captureMode = "hook"
     end
 end
@@ -376,67 +388,64 @@ if captureMode == "nenhum" and NotificationController and getupvalues then
     end)
 end
 
--- ─── RESGATE VIA REMOTE ───────────────────────────────────────────────────────
--- Lê a RemoteFunction que o próprio CodesController já tem em upvalue.
--- Nada de Net:RemoteFunction(...), nada de varrer o ReplicatedStorage.
-local redeemRemote = nil
-local remoteError  = nil
+-- ─── RESGATE PELO FLUXO DO JOGO ──────────────────────────────────────────────
+-- Roda o submitCode do CodesController (o mesmo que o Enter/botão "Confirm"
+-- chamam). Nada de Net:RemoteFunction(...), nada de varrer o ReplicatedStorage.
+local submitCode  = nil -- função do jogo
+local codesBox    = nil -- PlayerGui.Codes.Codes.CodeRedeem.TextBox
+local codesButton = nil -- botão "Codes" do HUD (Visible = códigos habilitados)
+local submitError = nil
 
-local CodesController
-pcall(function()
-    CodesController = require(ReplicatedStorage.Controllers.CodesController)
-end)
-
--- Junta RemoteFunctions dos upvalues de fn (e das funções que estão nos
--- upvalues dela, um nível abaixo, caso o InvokeServer esteja num helper local).
-local function collectRemotes(fn, found, depth, seen)
-    if seen[fn] then return end
-    seen[fn] = true
+local function upvaluesOf(fn)
     local ok, ups = pcall(getupvalues, fn)
-    if not ok or type(ups) ~= "table" then return end
-    for _, v in pairs(ups) do
-        if typeof(v) == "Instance" and v:IsA("RemoteFunction") then
-            found[v] = true
-        elseif type(v) == "function" and depth > 0 then
-            collectRemotes(v, found, depth - 1, seen)
-        end
-    end
+    return ok and type(ups) == "table" and ups or {}
 end
 
-local function getRedeemRemote()
-    if redeemRemote and redeemRemote.Parent then return redeemRemote end
-    redeemRemote = nil
-    if not getupvalues then
-        remoteError = "executor sem debug.getupvalues"
-        return nil
-    end
-    if type(CodesController) ~= "table" then
-        remoteError = "CodesController não carregado"
-        return nil
+local function findSubmit()
+    if submitCode and codesBox and codesBox.Parent then return true end
+    submitCode, codesBox = nil, nil
+    if not getconnections then submitError = "executor sem getconnections"; return false end
+    if not getupvalues then submitError = "executor sem debug.getupvalues"; return false end
+
+    local pg = LP:FindFirstChild("PlayerGui")
+    local box = pg and pg:FindFirstChild("Codes")
+    box = box and box:FindFirstChild("Codes")
+    box = box and box:FindFirstChild("CodeRedeem")
+    box = box and box:FindFirstChild("TextBox")
+    if not (typeof(box) == "Instance" and box:IsA("TextBox")) then
+        submitError = "TextBox do Codes não encontrada"
+        return false
     end
 
-    local found, seen = {}, {}
-    for _, v in pairs(CodesController) do
-        if typeof(v) == "Instance" and v:IsA("RemoteFunction") then
-            found[v] = true
-        elseif type(v) == "function" then
-            collectRemotes(v, found, 1, seen)
+    -- CodesController.lua:61: FocusLost:Connect(function(p26) if p26 then v_u_25() end end)
+    -- upvalue único = submitCode, e submitCode tem a TextBox (p_u_17) como upvalue.
+    local found = {}
+    for _, conn in ipairs(getconnections(box.FocusLost)) do
+        local handler = conn.Function
+        if type(handler) == "function" then
+            local ups = upvaluesOf(handler)
+            if #ups == 1 and type(ups[1]) == "function" then
+                for _, v in pairs(upvaluesOf(ups[1])) do
+                    if v == box then found[ups[1]] = true break end
+                end
+            end
         end
     end
 
     local list = {}
-    for rf in pairs(found) do table.insert(list, rf) end
-    if #list == 1 then
-        redeemRemote, remoteError = list[1], nil
-    elseif #list == 0 then
-        remoteError = "nenhuma RemoteFunction nos upvalues do CodesController"
-    else
-        -- mais de uma: não dá pra saber qual é a de resgate sem o dump
-        local names = {}
-        for _, rf in ipairs(list) do table.insert(names, rf:GetFullName()) end
-        remoteError = "várias RemoteFunctions, ambíguo: " .. table.concat(names, ", ")
+    for fn in pairs(found) do table.insert(list, fn) end
+    if #list ~= 1 then
+        submitError = #list == 0 and "submitCode não encontrado na TextBox"
+            or "mais de um submitCode candidato, ambíguo"
+        return false
     end
-    return redeemRemote
+
+    submitCode, codesBox = list[1], box
+    local btn = pg:FindFirstChild("LeftCenter")
+    btn = btn and btn:FindFirstChild("LeftCenter")
+    btn = btn and btn:FindFirstChild("Buttons")
+    codesButton = btn and btn:FindFirstChild("Codes")
+    return true
 end
 
 local function cleanCode(code)
@@ -447,19 +456,39 @@ end
 local queue, queued, busy = {}, {}, false
 local tried = {} -- códigos já resgatados nesta sessão (evita repetir)
 
+-- Retorna (ok, mensagem, chegouNoServidor)
 local function invokeRedeem(code)
-    local rf = getRedeemRemote()
-    if not rf then
-        return false, "Remote não encontrada: " .. tostring(remoteError)
+    if not findSubmit() then
+        return false, "Remote não encontrada: " .. tostring(submitError), false
     end
-    local ok, success, msg = pcall(rf.InvokeServer, rf, code)
+    -- mesmas condições do jogo (CodesController.lua:22 e :88-97)
+    if codesButton and not codesButton.Visible then
+        return false, "Códigos desativados neste servidor", false
+    end
+    if not codesBox.Active then
+        return false, "Jogo ainda processando o resgate anterior", false
+    end
+
+    local result
+    genv.__SammyRedeemResult = function(text, sound)
+        if result == nil and type(text) == "string" and (sound == SFX_SUCCESS or sound == SFX_ERROR) then
+            result = { text = text, ok = sound == SFX_SUCCESS }
+        end
+    end
+    codesBox.Text = code -- já filtrado igual ao jogo ([%w], 50 chars)
+    local ok, err = pcall(submitCode) -- InvokeServer + Success/Error + wait(0.5) do jogo
+    genv.__SammyRedeemResult = nil
+
     if not ok then
-        return false, "Erro: " .. tostring(success), false
+        return false, "Erro: " .. tostring(err), false
     end
-    if success then
-        return true, typeof(msg) == "string" and msg or "Code redeemed!", true
+    if result then
+        return result.ok, result.text, true
     end
-    return false, typeof(msg) == "string" and msg or "Request failed", true
+    if captureMode ~= "hook" then
+        return false, "Enviado; resultado só na notificação do jogo (sem hook)", true
+    end
+    return false, "Sem resposta do jogo (submit ignorado?)", false
 end
 
 local function processQueue()
@@ -602,10 +631,16 @@ task.spawn(function()
     local pg = LP:WaitForChild("PlayerGui")
     pg:WaitForChild("Codes", 30)
 
-    local rf = getRedeemRemote()
-    setStatus(("Topo: %s · Remote: %s"):format(captureText, rf and "ok" or "não achada"),
-        rf and 60 or 220, rf and 200 or 120, rf and 100 or 60, 4)
-    if not rf then
-        warn("[SammyCodes] Remote não encontrada: " .. tostring(remoteError))
+    -- o submitCode só existe depois do CodesController.Start rodar
+    local found = false
+    for _ = 1, 20 do
+        found = findSubmit()
+        if found then break end
+        task.wait(0.5)
+    end
+    setStatus(("Topo: %s · Resgate: %s"):format(captureText, found and "ok" or "não achado"),
+        found and 60 or 220, found and 200 or 120, found and 100 or 60, 4)
+    if not found then
+        warn("[SammyCodes] Remote não encontrada: " .. tostring(submitError))
     end
 end)
