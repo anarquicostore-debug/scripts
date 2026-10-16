@@ -374,6 +374,48 @@ do
         return new("UIGradient", { Rotation = rot or 0,
             Color = ColorSequence.new(THEME.accent, THEME.accent2) }, o)
     end
+    -- Botão com fundo em degradê: o UIGradient fica num Frame de fundo e o texto
+    -- num TextLabel por cima. (UIGradient direto no botão pinta o texto junto,
+    -- por isso os botões vermelhos apareciam sem texto.)
+    local GREEN = ColorSequence.new(Color3.fromRGB(70, 220, 120), Color3.fromRGB(24, 150, 72))
+    local function fillButton(parent, label, props, colors, radius)
+        local b = Instance.new("TextButton")
+        b.BackgroundTransparency = 1
+        b.AutoButtonColor = false
+        b.Text = ""
+        b.BorderSizePixel = 0
+        for k, v in pairs(props or {}) do b[k] = v end
+        local fill = Instance.new("Frame")
+        fill.Name = "Fill"
+        fill.Size = UDim2.fromScale(1, 1)
+        fill.BackgroundColor3 = Color3.new(1, 1, 1)
+        fill.BorderSizePixel = 0
+        fill.Parent = b
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, radius or 8)
+        c.Parent = fill
+        local g = Instance.new("UIGradient")
+        g.Rotation = 90
+        g.Color = colors or ColorSequence.new(THEME.accent, THEME.accent2)
+        g.Parent = fill
+        local l = Instance.new("TextLabel")
+        l.Name = "Label"
+        l.Size = UDim2.fromScale(1, 1)
+        l.BackgroundTransparency = 1
+        l.FontFace = FONT_BOLD
+        l.TextSize = 12
+        l.TextColor3 = Color3.new(1, 1, 1)
+        l.Text = label
+        l.TextWrapped = true
+        l.Parent = b
+        local sc = Instance.new("UIScale")
+        sc.Parent = b
+        b.MouseButton1Down:Connect(function() TweenService:Create(sc, TweenInfo.new(0.08), { Scale = 0.95 }):Play() end)
+        b.MouseButton1Up:Connect(function() TweenService:Create(sc, TweenInfo.new(0.12), { Scale = 1 }):Play() end)
+        b.MouseLeave:Connect(function() TweenService:Create(sc, TweenInfo.new(0.12), { Scale = 1 }):Play() end)
+        b.Parent = parent
+        return b, l, g
+    end
     local function tween(o, t, props)
         TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props):Play()
     end
@@ -414,7 +456,7 @@ do
 
     V3ntUI.util = {
         new = new, corner = corner, outline = outline, accentGradient = accentGradient,
-        tween = tween, text = text, draggable = draggable,
+        tween = tween, text = text, draggable = draggable, fillButton = fillButton, GREEN = GREEN,
         FONT = FONT, FONT_BOLD = FONT_BOLD, FONT_HEAVY = FONT_HEAVY,
     }
 
@@ -444,8 +486,12 @@ do
             -- barra superior
             local top = new("Frame", { Name = "Top", Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = THEME.panel,
                 BorderSizePixel = 0, Active = true }, main)
+            corner(top, 12)
+            -- tapa os cantos de baixo da barra (só os de cima ficam redondos)
+            new("Frame", { Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12),
+                BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, top)
             local accentLine = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
-                BorderSizePixel = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, top)
+                BorderSizePixel = 0, BackgroundColor3 = Color3.new(1, 1, 1), ZIndex = 2 }, top)
             accentGradient(accentLine)
             local logo = new("Frame", { Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(12, 9),
                 BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, top)
@@ -476,6 +522,11 @@ do
             -- barra lateral
             local sidebar = new("Frame", { Name = "Sidebar", Position = UDim2.fromOffset(0, 46),
                 Size = UDim2.new(0, 150, 1, -46), BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, main)
+            corner(sidebar, 12)
+            -- só o canto de baixo-esquerdo fica redondo (acompanha a janela)
+            new("Frame", { Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, sidebar)
+            new("Frame", { Size = UDim2.new(0, 12, 1, 0), Position = UDim2.new(1, -12, 0, 0),
+                BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, sidebar)
             new("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0),
                 BackgroundColor3 = THEME.stroke, BorderSizePixel = 0 }, sidebar)
             local tabList = new("Frame", { Size = UDim2.new(1, -16, 1, -16), Position = UDim2.fromOffset(8, 10),
@@ -486,13 +537,11 @@ do
                 Size = UDim2.new(1, -150, 1, -46), BackgroundTransparency = 1 }, main)
 
             -- botão flutuante pra reabrir
-            local launcher = new("TextButton", { Name = "Launcher", Size = UDim2.fromOffset(48, 48),
-                Position = UDim2.new(0, 24, 0.5, -24), BackgroundColor3 = Color3.new(1, 1, 1), Text = "V",
-                FontFace = FONT_HEAVY, TextSize = 22, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
-                Visible = false, BorderSizePixel = 0 }, gui)
-            corner(launcher, 24)
-            accentGradient(launcher, 45)
-            outline(launcher, Color3.new(1, 1, 1), 2, 0.6)
+            local launcher, launcherLabel = fillButton(gui, "V", { Name = "Launcher", Size = UDim2.fromOffset(48, 48),
+                Position = UDim2.new(0, 24, 0.5, -24), Visible = false }, nil, 24)
+            launcherLabel.FontFace = FONT_HEAVY
+            launcherLabel.TextSize = 22
+            outline(launcher.Fill, Color3.new(1, 1, 1), 2, 0.6)
             draggable(launcher, launcher)
 
             local window = { Name = cfg.Name, Tabs = {} }
@@ -612,16 +661,9 @@ do
 
                     function section:CreateButton(c)
                         local row = card(tostring(c.Name), c.Note, 96)
-                        local b = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
-                            Size = UDim2.fromOffset(90, 28), BackgroundColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
-                            Text = tostring(c.ButtonText or "Executar"), FontFace = FONT_BOLD, TextSize = 12,
-                            TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, row)
-                        corner(b, 7)
-                        accentGradient(b, 90)
-                        local sc = new("UIScale", { Scale = 1 }, b)
-                        b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.94 }) end)
-                        b.MouseButton1Up:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
-                        b.MouseLeave:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
+                        local b = fillButton(row, tostring(c.ButtonText or "Executar"), {
+                            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+                            Size = UDim2.fromOffset(90, 28) }, nil, 7)
                         b.Activated:Connect(function() safeCall(c.Callback) end)
                         return {}
                     end
@@ -702,7 +744,9 @@ end
 --     segurar o "Grab" de ovos que ficam no alto).
 local Fly = { current = nil, holding = nil }
 
-local CAST_RADIUS = 2.5
+-- folga usada nos testes de rota (o personagem tem ~2 de largura e ~5 de altura;
+-- 4 dá margem pra não raspar em ilhas). Se não achar rota, tenta com 2.5.
+local CAST_RADIUS = 4
 
 local function castParams(ignore)
     local p = RaycastParams.new()
@@ -720,7 +764,7 @@ end
 
 local castCount = 0
 -- Spherecast aceita no máximo 1024 studs: testa em trechos de 900.
-local function lineClear(a, b, params)
+local function lineClear(a, b, params, radius)
     local d = b - a
     local len = d.Magnitude
     if len < 0.5 then return true end
@@ -729,7 +773,7 @@ local function lineClear(a, b, params)
         local step = math.min(900, len - done)
         castCount = castCount + 1
         if castCount % 200 == 0 then task.wait() end
-        local ok, hit = pcall(function() return workspace:Spherecast(from, CAST_RADIUS, dir * step, params) end)
+        local ok, hit = pcall(function() return workspace:Spherecast(from, radius or CAST_RADIUS, dir * step, params) end)
         if not ok or hit then return false end
         from = from + dir * step
         done = done + step
@@ -746,7 +790,17 @@ for _, r in ipairs({ 14, 28, 50 }) do
 end
 
 -- Devolve a lista de pontos até o alvo (ou nil).
+local planRouteOnce
 local function planRoute(start, goal, params)
+    local r = planRouteOnce(start, goal, params)
+    if r then return r end
+    local old = CAST_RADIUS
+    CAST_RADIUS = 2.5
+    r = planRouteOnce(start, goal, params)
+    CAST_RADIUS = old
+    return r
+end
+function planRouteOnce(start, goal, params)
     castCount = 0
     -- perto e na mesma altura: reto
     if (goal - start).Magnitude < 40 and math.abs(goal.Y - start.Y) < 6 and lineClear(start, goal, params) then
@@ -791,6 +845,45 @@ local function planRoute(start, goal, params)
         end
     end
     log("sem rota livre (" .. castCount .. " testes)")
+    return nil
+end
+
+-- Desvio: tem algo na frente (ex.: ilha em cima enquanto sobe). Procura um
+-- ponto ao lado, o mais perto possível, de onde dá pra seguir até o destino do
+-- trecho sem bater. Subindo/descendo: testa 16 direções na horizontal e, do
+-- ponto ao lado, a coluna até a altura do destino. Andando de lado: testa
+-- direita/esquerda/cima/baixo do movimento. Devolve os pontos a inserir.
+local function findDetour(pos, target, params)
+    local dir = target - pos
+    if dir.Magnitude < 1 then return nil end
+    dir = dir.Unit
+    local vertical = math.abs(dir.Y) > 0.7
+    local sides = {}
+    if vertical then
+        for i = 0, 15 do
+            local a = i / 16 * math.pi * 2
+            table.insert(sides, Vector3.new(math.cos(a), 0, math.sin(a)))
+        end
+    else
+        local right = dir:Cross(Vector3.yAxis)
+        if right.Magnitude < 0.1 then right = Vector3.xAxis end
+        right = right.Unit
+        local up = right:Cross(dir).Unit
+        sides = { up, right, -right, (up + right).Unit, (up - right).Unit, -up }
+    end
+    for _, d in ipairs({ 12, 22, 35, 55, 80 }) do
+        for _, s in ipairs(sides) do
+            local side = pos + s * d
+            if lineClear(pos, side, params) then
+                if vertical then
+                    local col = Vector3.new(side.X, target.Y, side.Z)
+                    if lineClear(side, col, params) then return { side, col } end
+                else
+                    if lineClear(side, target, params) then return { side } end
+                end
+            end
+        end
+    end
     return nil
 end
 
@@ -920,7 +1013,7 @@ function Fly.travel(getTarget, opts)
             route = { Vector3.new(hrp.Position.X, alt, hrp.Position.Z), Vector3.new(goal.X, alt, goal.Z), goal }
             log("usando rota alta de reserva")
         end
-        local idx, tries, moves = 1, 0, 0
+        local idx, tries, moves, detours = 1, 0, 0, 0
         local best, bestAt = math.huge, os.clock()
         local total = 0
         do local prev = hrp.Position for _, p in ipairs(route) do total = total + (p - prev).Magnitude prev = p end end
@@ -956,8 +1049,36 @@ function Fly.travel(getTarget, opts)
                 best, bestAt = math.huge, os.clock()
             else
                 local spd = math.min(config.flySpeed, dist / math.max(dt, 1 / 240) * 0.85)
-                motor.lv.VectorVelocity = delta.Unit * spd
-                motor.face(delta)
+                -- olha à frente (mais longe quanto mais rápido) e desvia antes de bater.
+                -- Perto do destino final não olha (o chão/plot embaixo não é obstáculo).
+                local blocked = false
+                if not (last and dist < 12) and detours < 10 then
+                    local look = math.min(dist, spd * dt * 6 + 10)
+                    local okC, hit = pcall(function()
+                        return workspace:Spherecast(h.Position, 3, delta.Unit * look, params)
+                    end)
+                    if okC and hit then
+                        blocked = true
+                        motor.lv.VectorVelocity = Vector3.zero
+                        local detour = findDetour(h.Position, p, params)
+                        if detour then
+                            detours = detours + 1
+                            for i = #detour, 1, -1 do table.insert(route, idx, detour[i]) end
+                            log(("desviando de %s (%d pontos)"):format(hit.Instance and hit.Instance.Name or "?", #detour))
+                            best, bestAt = math.huge, os.clock()
+                        else
+                            tries = tries + 1
+                            log("obstáculo sem desvio, recalculando (" .. tries .. ")")
+                            if tries > 3 then reason = "stuck" return end
+                            route = planRoute(h.Position, goal, params) or { goal }
+                            idx, best, bestAt = 1, math.huge, os.clock()
+                        end
+                    end
+                end
+                if not blocked then
+                    motor.lv.VectorVelocity = delta.Unit * spd
+                    motor.face(delta)
+                end
                 if dist < best - 0.5 then
                     best, bestAt = dist, os.clock()
                 elseif os.clock() - bestAt > 1.5 then
@@ -1373,9 +1494,13 @@ outline(hub, TH.stroke, 1)
 
 local hubTop = new("Frame", { Size = UDim2.new(1, 0, 0, 54), BackgroundColor3 = TH.panel, BorderSizePixel = 0,
     Active = true }, hub)
+corner(hubTop, 14)
 do
+    -- só os cantos de cima redondos
+    new("Frame", { Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 1, -14),
+        BackgroundColor3 = TH.panel, BorderSizePixel = 0 }, hubTop)
     local line = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
-        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, hubTop)
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 2 }, hubTop)
     U.accentGradient(line)
 end
 text(hubTop, { Position = UDim2.fromOffset(16, 8), Size = UDim2.new(1, -70, 0, 20), Text = "Ovos no servidor",
@@ -1398,18 +1523,94 @@ new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12)
 local emptyLabel = text(hubList, { Size = UDim2.new(1, 0, 0, 60), Text = "Nenhum ovo no servidor agora.",
     TextColor3 = TH.sub, TextXAlignment = Enum.TextXAlignment.Center, LayoutOrder = -1 })
 
-local function pillButton(parent, label, primary, props)
-    local b = new("TextButton", { BackgroundColor3 = primary and Color3.new(1, 1, 1) or TH.cardHover,
-        AutoButtonColor = false, Text = label, FontFace = U.FONT_BOLD, TextSize = 12,
-        TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, parent)
+-- Botão do card. Devolve (botão, label do texto).
+--   style "green": degradê verde (Coletar) · "plain": cinza com borda
+local function pillButton(parent, label, style, props)
+    if style == "green" then
+        return U.fillButton(parent, label, props, U.GREEN, 8)
+    end
+    local b = new("TextButton", { BackgroundColor3 = TH.cardHover, AutoButtonColor = false, Text = label,
+        FontFace = U.FONT_BOLD, TextSize = 12, TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, parent)
     for k, v in pairs(props or {}) do b[k] = v end
     corner(b, 8)
-    if primary then U.accentGradient(b, 90) else outline(b, TH.stroke, 1) end
+    outline(b, TH.stroke, 1)
     local sc = new("UIScale", { Scale = 1 }, b)
     b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.95 }) end)
     b.MouseButton1Up:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
     b.MouseLeave:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
-    return b
+    return b, b
+end
+
+-- ─── EFEITO DE RARIDADE / MUTAÇÃO ────────────────────────────────────────────
+-- 1º usa o efeito do próprio jogo (Packages.Gradients e Shared.MutationText, os
+-- mesmos do overhead dos brainrots, AnimalOverheadController); se não der,
+-- usa os degradês abaixo, feitos pros presets de Datas.Rarities.
+local GameGradients = tryRequire("Packages", "Gradients")
+local GameMutationText = tryRequire("Shared", "MutationText")
+
+local function cs(...)
+    local cols, kps = { ... }, {}
+    for i, c in ipairs(cols) do table.insert(kps, ColorSequenceKeypoint.new((i - 1) / (#cols - 1), c)) end
+    return ColorSequence.new(kps)
+end
+local PRESETS = {
+    Rainbow   = cs(Color3.fromRGB(255, 60, 60), Color3.fromRGB(255, 200, 40), Color3.fromRGB(60, 230, 90),
+                   Color3.fromRGB(50, 170, 255), Color3.fromRGB(190, 70, 255), Color3.fromRGB(255, 60, 60)),
+    Zebra     = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(20, 20, 20)), ColorSequenceKeypoint.new(0.24, Color3.fromRGB(20, 20, 20)),
+        ColorSequenceKeypoint.new(0.25, Color3.fromRGB(245, 245, 245)), ColorSequenceKeypoint.new(0.49, Color3.fromRGB(245, 245, 245)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(20, 20, 20)), ColorSequenceKeypoint.new(0.74, Color3.fromRGB(20, 20, 20)),
+        ColorSequenceKeypoint.new(0.75, Color3.fromRGB(245, 245, 245)), ColorSequenceKeypoint.new(1, Color3.fromRGB(245, 245, 245)) }),
+    OG        = cs(Color3.fromRGB(255, 215, 90), Color3.fromRGB(255, 255, 255), Color3.fromRGB(255, 180, 40)),
+    YellowRed = cs(Color3.fromRGB(255, 230, 60), Color3.fromRGB(255, 70, 50)),
+    GreenRed  = cs(Color3.fromRGB(60, 220, 90), Color3.fromRGB(255, 70, 70)),
+}
+
+local function cleanupOf(x)
+    return function()
+        pcall(function()
+            local t = typeof(x)
+            if t == "function" then x()
+            elseif t == "RBXScriptConnection" then x:Disconnect()
+            elseif t == "Instance" then x:Destroy()
+            elseif t == "table" then
+                if type(x.Destroy) == "function" then x:Destroy()
+                elseif type(x.Disconnect) == "function" then x:Disconnect()
+                elseif type(x.Clean) == "function" then x:Clean() end
+            end
+        end)
+    end
+end
+
+-- aplica o efeito da raridade no label; devolve a função de limpeza
+local function styleRarity(label, rarity)
+    local rd = rarity and RaritiesData[rarity]
+    local preset = rd and rd.GradientPreset
+    label.TextColor3 = rd and rd.Color or TH.text
+    if not preset then return function() end end
+    label.TextColor3 = Color3.new(1, 1, 1)
+    if GameGradients and type(GameGradients.apply) == "function" then
+        local ok, res = pcall(GameGradients.apply, label, preset)
+        if ok then return cleanupOf(res) end
+    end
+    local g = Instance.new("UIGradient")
+    g.Color = PRESETS[preset] or cs(rd.Color or Color3.new(1, 1, 1), Color3.new(1, 1, 1))
+    g.Parent = label
+    local conn = RunService.RenderStepped:Connect(function()
+        g.Offset = Vector2.new(((os.clock() * 0.4) % 2) - 1, 0)
+    end)
+    return function() pcall(function() conn:Disconnect(); g:Destroy() end) end
+end
+
+-- mutação com o efeito do jogo; se não der, texto colorido do Datas.Mutations
+local function styleMutation(label, mutation)
+    label.RichText = true
+    if GameMutationText and type(GameMutationText.apply) == "function" then
+        local ok, res = pcall(GameMutationText.apply, label, mutation, "Auto")
+        if ok then return cleanupOf(res) end
+    end
+    label.Text = mutationRich(mutation) or tostring(mutation)
+    return function() end
 end
 
 local function chip(parent, order)
@@ -1484,7 +1685,7 @@ local function startEggJob(e, ui, mode)
         cancelJob()
         if same then return end -- clicar de novo = parar
     end
-    local btn = mode == "collect" and ui.collectBtn or ui.flyBtn
+    local btn = mode == "collect" and ui.collectLabel or ui.flyLabel
     local original = btn.Text
     local job = { ui = ui, mode = mode, cancelled = false }
     job.reset = function() pcall(function() btn.Text = original end) end
@@ -1599,7 +1800,7 @@ local function makeCard(e)
     local card = new("Frame", { Size = UDim2.new(1, 0, 0, 172), AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = TH.card, BorderSizePixel = 0 }, hubList)
     corner(card, 12)
-    local cs = outline(card, TH.stroke, 1, 0.2)
+    local cardStroke = outline(card, TH.stroke, 1, 0.2)
 
     local vp = new("ViewportFrame", { Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(116, 116),
         BackgroundColor3 = TH.panel, BorderSizePixel = 0, Ambient = Color3.fromRGB(200, 200, 200),
@@ -1626,6 +1827,8 @@ local function makeCard(e)
     local rarityChip, rarityLabel = chip(chips, 1)
     local mutChip, mutLabel, mutIcon = chip(chips, 2)
     local timeChip, timeLabel = chip(chips, 3)
+    local goneChip, goneLabel = chip(chips, 4)
+    goneLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
 
     local traitsRow = new("Frame", { Position = UDim2.fromOffset(138, 64), Size = UDim2.new(1, -150, 0, 20),
         BackgroundTransparency = 1 }, card)
@@ -1650,13 +1853,14 @@ local function makeCard(e)
     -- botões
     local isMap = e.kind == "Mapa" and e.id ~= nil
     local ui = { card = card, cam = cam, center = center, radius = radius, angle = math.random() * math.pi * 2 }
-    ui.flyBtn = pillButton(card, "Voar", false, { Position = UDim2.fromOffset(10, 134),
+    ui.flyBtn, ui.flyLabel = pillButton(card, "Voar", "plain", { Position = UDim2.fromOffset(10, 134),
         Size = UDim2.fromOffset(116, 28) })
-    ui.collectBtn = pillButton(card, isMap and "Coletar" or "Só no mapa", isMap, { Position = UDim2.fromOffset(138, 134),
-        Size = UDim2.new(0.5, -82, 0, 28), AutoButtonColor = false })
-    local moreBtn = pillButton(card, "Detalhes", false, { AnchorPoint = Vector2.new(1, 0),
+    ui.collectBtn, ui.collectLabel = pillButton(card, isMap and "Coletar" or "Só no mapa", isMap and "green" or "plain",
+        { Position = UDim2.fromOffset(138, 134), Size = UDim2.new(0.5, -82, 0, 28) })
+    local moreBtn = pillButton(card, "Detalhes", "plain", { AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -12, 0, 134), Size = UDim2.new(0.5, -82, 0, 28) })
-    if not isMap then ui.collectBtn.TextColor3 = TH.sub end
+    if not isMap then ui.collectLabel.TextColor3 = TH.sub end
+    ui.cleanups = {}
 
     local details = text(card, { Position = UDim2.fromOffset(12, 172), Size = UDim2.new(1, -24, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, TextSize = 11, TextColor3 = TH.sub, Visible = false,
@@ -1678,24 +1882,34 @@ local function makeCard(e)
         local a = type(ev.index) == "string" and AnimalsData[ev.index] or nil
         ev.displayName = a and a.DisplayName or ev.index
         name.Text = esc(ev.displayName or "Ovo")
-        name.TextColor3 = rcolor
-        cs.Color = rcolor
-        -- raridade
+        cardStroke.Color = rcolor
+        -- raridade (com o efeito de degradê do jogo: Rainbow, Zebra, OG...)
         local rarity = a and a.Rarity or (ev.overhead and ev.overhead.rarity)
         rarityChip.Visible = rarity ~= nil
         rarityLabel.Text = tostring(rarity or "")
-        rarityLabel.TextColor3 = rcolor
-        -- mutação
+        if rarity ~= ui.styledRarity then
+            ui.styledRarity = rarity
+            for _, c in ipairs(ui.cleanups) do c() end
+            ui.cleanups = {}
+            table.insert(ui.cleanups, styleRarity(name, rarity))
+            table.insert(ui.cleanups, styleRarity(rarityLabel, rarity))
+        end
+        -- mutação (com o efeito do jogo)
         mutChip.Visible = ev.mutation ~= nil
-        if ev.mutation then
-            mutLabel.Text = mutationRich(ev.mutation) or tostring(ev.mutation)
+        if ev.mutation and ev.mutation ~= ui.styledMutation then
+            ui.styledMutation = ev.mutation
+            mutLabel.Text = tostring(ev.mutation)
+            table.insert(ui.cleanups, styleMutation(mutLabel, ev.mutation))
             local ic = mutationIcon(ev.mutation)
             mutIcon.Visible = ic ~= nil
             if ic then mutIcon.Image = tostring(ic) end
         end
-        -- tempo
+        -- tempos
         timeChip.Visible = timerTxt ~= nil
         timeLabel.Text = timerTxt and ("Choca " .. esc(timerTxt)) or ""
+        local gone = type(ev.despawn) == "number" and fmtTime(ev.despawn) or nil
+        goneChip.Visible = gone ~= nil
+        goneLabel.Text = gone and ("Some em " .. esc(gone)) or ""
         -- traits
         local names = {}
         for _, t in ipairs(ev.traits) do table.insert(names, traitRich(t)) end
@@ -1730,7 +1944,10 @@ local function clearEntry(key)
     local ent = entries[key]
     if not ent then return end
     if ent.esp then pcall(function() ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end) end
-    if ent.ui then pcall(function() ent.ui.card:Destroy() end) end
+    if ent.ui then
+        for _, c in ipairs(ent.ui.cleanups or {}) do c() end
+        pcall(function() ent.ui.card:Destroy() end)
+    end
     entries[key] = nil
 end
 
@@ -1761,6 +1978,7 @@ local function refresh()
             ent.ui = ent.ui or makeCard(e)
             ent.ui.update(e, hrp)
         elseif ent.ui then
+            for _, c in ipairs(ent.ui.cleanups or {}) do c() end
             pcall(function() ent.ui.card:Destroy() end)
             ent.ui = nil
         end
