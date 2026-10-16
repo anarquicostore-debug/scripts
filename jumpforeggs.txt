@@ -226,10 +226,27 @@ local conns = {}
 local toggles = { esp = false, hub = false, egg = false, brainrot = false, upgrade = false }
 
 -- ─── CONFIG (salva na pasta workspace do executor) ───────────────────────────
--- Arquivo: workspace/V3nt/JumpForEgg.json  → { "flySpeed": 60 }
+-- Arquivo: workspace/V3nt/JumpForEgg.json
+--   { "flySpeed": 60, "filter": { "enabled": false, "eggs": [...], "rarities": [...], "mutations": [...] } }
 local HttpService = game:GetService("HttpService")
 local CONFIG_DIR, CONFIG_FILE = "V3nt", "V3nt/JumpForEgg.json"
 local config = { flySpeed = 60 }
+-- filtro de ovos (conjuntos: nome → true). Categoria vazia = não filtra por ela.
+local filter = { enabled = false, eggs = {}, rarities = {}, mutations = {} }
+
+local function toSet(list)
+    local s = {}
+    if type(list) == "table" then
+        for _, v in ipairs(list) do if type(v) == "string" then s[v] = true end end
+    end
+    return s
+end
+local function toList(set)
+    local l = {}
+    for k, v in pairs(set) do if v then table.insert(l, k) end end
+    table.sort(l)
+    return l
+end
 
 local function loadConfig()
     local ok, data = pcall(function()
@@ -239,6 +256,12 @@ local function loadConfig()
     end)
     if ok and type(data) == "table" then
         if type(data.flySpeed) == "number" then config.flySpeed = math.clamp(data.flySpeed, 10, 999) end
+        if type(data.filter) == "table" then
+            filter.enabled = data.filter.enabled == true
+            filter.eggs = toSet(data.filter.eggs)
+            filter.rarities = toSet(data.filter.rarities)
+            filter.mutations = toSet(data.filter.mutations)
+        end
         log("config carregada:", CONFIG_FILE, "flySpeed =", config.flySpeed)
     end
 end
@@ -246,7 +269,15 @@ end
 local function saveConfig()
     local ok, err = pcall(function()
         if makefolder and isfolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
-        writefile(CONFIG_FILE, HttpService:JSONEncode(config))
+        writefile(CONFIG_FILE, HttpService:JSONEncode({
+            flySpeed = config.flySpeed,
+            filter = {
+                enabled = filter.enabled,
+                eggs = toList(filter.eggs),
+                rarities = toList(filter.rarities),
+                mutations = toList(filter.mutations),
+            },
+        }))
     end)
     if not ok then log("não salvou a config:", err) end
     return ok
@@ -283,7 +314,16 @@ local NOTIF_COLORS = {
     err  = Color3.fromRGB(240, 70, 80),
 }
 
-local function notify(msg, kind, seconds)
+local notify
+-- Problema com explicação e solução:
+--   notifyProblem("Seu plot está cheio", "Choque ou venda um ovo e tente de novo.")
+local function notifyProblem(title, solution, kind, seconds)
+    local msg = "<b>" .. title .. "</b>"
+    if solution then msg = msg .. '\n<font color="#A8A8BC">Solução: ' .. solution .. "</font>" end
+    notify(msg, kind or "err", seconds or 10)
+end
+
+function notify(msg, kind, seconds)
     log("[notif]", msg)
     pcall(function()
         local color = typeof(kind) == "Color3" and kind or NOTIF_COLORS[kind or "info"] or NOTIF_COLORS.info
@@ -317,6 +357,7 @@ local function notify(msg, kind, seconds)
         t.TextWrapped = true
         t.TextXAlignment = Enum.TextXAlignment.Left
         t.TextColor3 = Color3.fromRGB(235, 235, 245)
+        t.RichText = true
         t.Text = msg
         t.ZIndex = 51
         t.Parent = box
@@ -1582,6 +1623,37 @@ local REASON_TEXT = {
 }
 local currentJob
 
+-- Motivo do voo → (o que aconteceu, solução)
+local FLY_PROBLEM = {
+    lost    = { "O ovo sumiu no caminho", "Alguém pegou ou ele expirou. Escolha outro ovo no hub." },
+    stuck   = { "O voo travou num obstáculo", "Tente de novo de outro lugar ou baixe a velocidade do fly." },
+    timeout = { "O voo demorou demais", "Aumente a velocidade do fly ou chegue mais perto antes." },
+    error   = { "Erro no voo", "Tente de novo. Se repetir, mande o F9 (linhas [JumpForEggs])." },
+    nochar  = { "Seu personagem morreu ou resetou", "Espere renascer e tente de novo." },
+}
+
+-- Ocupação do plot: ovos/pets seus x pódios numéricos (AnimalPodiums).
+-- Só uma estimativa pra avisar antes de voar; quem decide é o servidor.
+local function plotOccupancy()
+    local plot = getOwnPlot()
+    if not plot then return nil end
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    local cap = 0
+    if podiums then
+        for _, p in ipairs(podiums:GetChildren()) do
+            if tonumber(p.Name) then cap = cap + 1 end
+        end
+    end
+    local used = 0
+    for _, tag in ipairs({ "BasePlotEggVisual", "BasePlotPet" }) do
+        for _, m in ipairs(CollectionService:GetTagged(tag)) do
+            if m:IsDescendantOf(plot) then used = used + 1 end
+        end
+    end
+    if cap == 0 then return nil end
+    return used, cap
+end
+
 local function eggTarget(model)
     return function()
         if not model.Parent or not model:IsDescendantOf(workspace) then return nil end
@@ -1627,6 +1699,25 @@ local function startEggJob(e, ui, mode)
         if msg then setStatus(msg) end
         if kind then notify(msg, kind, 5) end
     end
+    -- termina com problema explicado + solução
+    local function fail(title, solution, land)
+        if currentJob == job then currentJob = nil end
+        job.reset()
+        setStatus(title)
+        notifyProblem(title, solution)
+        if land then
+            Fly.release()
+            task.spawn(Fly.landSafe)
+        end
+    end
+    local function flyFail(why, what)
+        local p = FLY_PROBLEM[why]
+        if p then
+            fail(what .. ": " .. p[1], p[2], false)
+        else
+            finish(what .. " (" .. tostring(why) .. ").")
+        end
+    end
     local name = tostring(e.displayName or e.index or "Ovo")
 
     task.spawn(function()
@@ -1634,17 +1725,28 @@ local function startEggJob(e, ui, mode)
             local model = e.model
             local tgt = eggTarget(model)
             if not tgt() then
-                notify(name .. " sumiu ou foi pego por alguém.", "err")
-                return finish("Ovo indisponível.")
+                return fail(name .. " não está mais disponível", "Alguém pegou ou ele expirou. Escolha outro ovo no hub.")
+            end
+            -- coletar: já avisa se o plot estiver cheio, antes de voar
+            if mode == "collect" then
+                if not getOwnPlot() then
+                    return fail("Você ainda não tem plot neste servidor", "Pegue um plot primeiro e tente de novo.")
+                end
+                local used, cap = plotOccupancy()
+                if used and cap and used >= cap then
+                    return fail(("Seu plot está cheio (%d/%d)"):format(used, cap),
+                        "Choque, venda ou pegue um ovo/pet do plot pra liberar espaço e tente de novo.")
+                end
             end
             setStatus("Voando até " .. name .. "...")
             local reached, why = Fly.travel(tgt, { ignore = { model }, hold = true })
             if not alive() then Fly.release() return end
             if not reached then
                 if why == "lost" then
-                    notify(name .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.", "err")
+                    return fail(name .. " sumiu enquanto você ia até ele",
+                        "Levando você pra ilha mais próxima. Escolha outro ovo no hub.")
                 end
-                return finish("Não chegou no ovo: " .. (REASON_TEXT[why] or tostring(why)) .. ".")
+                return flyFail(why, "Não chegou em " .. name)
             end
 
             if mode == "fly" then
@@ -1667,59 +1769,68 @@ local function startEggJob(e, ui, mode)
 
             -- Coletar: mesmas regras do prompt "Grab" do jogo (segura 1,25s, até 10 studs)
             if LP:GetAttribute("CarryingJumpEgg") ~= true then
-                if not grabRemote then Fly.release() return finish("Remote Grab não encontrada.", "err") end
+                if not grabRemote then
+                    return fail("Não dá pra pegar ovos agora", "O jogo pode ter atualizado (remote Grab não encontrada). Reinicie o script.", true)
+                end
                 setStatus("Pegando " .. name .. "...")
                 task.wait(1.3)
                 if not alive() then Fly.release() return end
                 local _, hrp = getChar()
                 if not tgt() then
-                    Fly.release()
-                    notify(name .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.", "err")
-                    task.spawn(Fly.landSafe)
-                    return finish("O ovo sumiu.")
+                    return fail(name .. " sumiu antes de você pegar", "Alguém pegou primeiro. Escolha outro ovo no hub.", true)
                 end
                 if not (hrp and (model:GetPivot().Position - hrp.Position).Magnitude <= 10) then
-                    Fly.release()
-                    task.spawn(Fly.landSafe)
-                    return finish("Longe demais pra pegar.", "err")
+                    return fail("Você ficou longe demais do ovo (mais de 10 studs)",
+                        "Tente de novo. Se repetir, baixe a velocidade do fly.", true)
                 end
                 grabRemote:FireServer("JumpLTM/Eggs", e.id)
                 log("Grab", e.id)
                 if not waitAttr("CarryingJumpEgg", true, 3) then
-                    Fly.release()
-                    task.spawn(Fly.landSafe)
-                    return finish("Não conseguiu pegar o ovo.", "err")
+                    return fail("O servidor não deixou pegar " .. name,
+                        "Alguém pegou antes, ou você já carrega outro ovo. Escolha outro ovo.", true)
                 end
             end
             if not alive() then Fly.release() return end
 
             -- Levar pro plot
-            if not plotLanding() then Fly.release() return finish("Seu plot não foi encontrado.", "err") end
+            if not plotLanding() then
+                return fail("Seu plot não foi encontrado", "O ovo continua na sua mão. Pegue um plot e coloque nele.", true)
+            end
             setStatus("Levando " .. name .. " pro seu plot...")
             reached, why = Fly.travel(plotLanding, {})
             if not alive() then return end
             if not reached then
-                return finish("Não chegou no plot: " .. (REASON_TEXT[why] or tostring(why)) .. ".", "err")
+                return flyFail(why, "Não chegou no seu plot")
             end
             -- espera encostar no chão do plot
             local t0 = os.clock()
             local _, _, hum = getChar()
             while hum and hum.FloorMaterial == Enum.Material.Air and os.clock() - t0 < 1.5 do task.wait() end
-            if not onOwnPlot() then return finish("Não ficou em cima do plot.", "err") end
-            if not eggRemote then return finish("Remote RequestEggPlace não encontrada.", "err") end
+            if not onOwnPlot() then
+                return fail("Você não ficou em cima do seu plot",
+                    "O ovo continua na sua mão. Ande até o chão do plot e use \"Colocar ovo agora\" (aba Base).")
+            end
+            if not eggRemote then
+                return fail("Não dá pra colocar ovos agora", "O jogo pode ter atualizado (remote não encontrada). Reinicie o script.")
+            end
             eggRemote:FireServer() -- mesma chamada do botão do jogo (JumpLTMController:1021)
             log("RequestEggPlace")
             if waitAttr("CarryingJumpEgg", false, 3) then
                 finish(name .. " colocado no seu plot!", "ok")
             else
-                finish("O servidor não colocou o ovo (plot cheio?).", "warn")
+                local used, cap = plotOccupancy()
+                if used and cap and used >= cap then
+                    fail(("Seu plot está cheio (%d/%d), não deu pra colocar o ovo"):format(used, cap),
+                        "O ovo continua na sua mão. Choque, venda ou pegue um ovo/pet do plot e use \"Colocar ovo agora\" (aba Base).")
+                else
+                    fail("O servidor não aceitou colocar o ovo",
+                        "O ovo continua na sua mão. Seu plot pode estar sem espaço livre: libere um lugar e use \"Colocar ovo agora\" (aba Base).")
+                end
             end
         end)
         if not ok then
             log("erro no voo/coleta:", err)
-            Fly.release()
-            task.spawn(Fly.landSafe)
-            finish("Erro no voo/coleta (veja F9).", "err")
+            fail("Erro no voo/coleta", "Tente de novo. Se repetir, mande o F9 (linhas [JumpForEggs]).", true)
         end
     end)
 end
@@ -1870,6 +1981,7 @@ end
 -- ─── REFRESH (ESP + HUB) ─────────────────────────────────────────────────────
 local entries = {}
 local cardSeq = 0
+local passesFilter = function() return true end -- trocado pelo filtro mais abaixo
 
 local function clearEntry(key)
     local ent = entries[key]
@@ -1883,7 +1995,11 @@ end
 
 local function refresh()
     local _, hrp = getChar()
-    local list = collectEggs()
+    local all = collectEggs()
+    local list = {}
+    for _, e in ipairs(all) do
+        if passesFilter(e) then table.insert(list, e) end
+    end
     local seen = {}
     local plots, mapa = 0, 0
     for _, e in ipairs(list) do
@@ -1921,6 +2037,8 @@ local function refresh()
     end
     emptyLabel.Visible = #list == 0
     hubSub.Text = ("%d ovos  ·  %d no mapa  ·  %d em plots"):format(#list, mapa, plots)
+        .. (filter.enabled and ("  ·  filtro: %d de %d"):format(#list, #all) or "")
+    emptyLabel.Text = (filter.enabled and #all > 0) and "Nenhum ovo passa no filtro agora." or "Nenhum ovo no servidor agora."
 end
 
 task.spawn(function()
@@ -1946,6 +2064,318 @@ table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt
         end
     end
 end)))
+
+-- ═══ FILTRO DE OVOS ══════════════════════════════════════════════════════════
+-- Com o filtro ligado, só aparecem (no hub e no ESP) os ovos que passam em TODAS
+-- as categorias marcadas. Categoria sem nada marcado não filtra.
+--   Ovos: nome exato do ovo (Datas.Animals) · Raridades · Mutações ("Sem mutação" = normal)
+local NO_MUTATION = "__none"
+local filterToggleOpt -- toggle da janela principal (pra sincronizar)
+local filterChanged   -- avisa o painel pra repintar
+
+local function filterCount()
+    local n = 0
+    for _, set in ipairs({ filter.eggs, filter.rarities, filter.mutations }) do
+        for _, v in pairs(set) do if v then n = n + 1 end end
+    end
+    return n
+end
+
+passesFilter = function(e)
+    if not filter.enabled then return true end
+    local a = type(e.index) == "string" and AnimalsData[e.index] or nil
+    if next(filter.eggs) and not filter.eggs[e.index] then return false end
+    if next(filter.rarities) then
+        local r = a and a.Rarity or (e.overhead and e.overhead.rarity)
+        if not (r and filter.rarities[r]) then return false end
+    end
+    if next(filter.mutations) then
+        if not filter.mutations[e.mutation or NO_MUTATION] then return false end
+    end
+    return true
+end
+
+local saveQueued = false
+local function filterUpdated()
+    if filterChanged then pcall(filterChanged) end
+    pcall(refresh)
+    if not saveQueued then -- junta vários cliques num save só
+        saveQueued = true
+        task.delay(1, function() saveQueued = false; saveConfig() end)
+    end
+end
+
+local function setFilterEnabled(v, fromMain)
+    filter.enabled = v == true
+    if filterToggleOpt and not fromMain then pcall(function() filterToggleOpt:SetValue(filter.enabled, false) end) end
+    filterUpdated()
+end
+
+-- listas pro painel
+local EGG_LIST, RARITY_LIST, MUTATION_LIST = {}, {}, {}
+for idx, a in pairs(AnimalsData) do
+    if type(a) == "table" and type(a.Egg) == "table" then table.insert(EGG_LIST, idx) end
+end
+local function rarityWeight(r) local d = RaritiesData[r]; return d and d.Weight or 0 end
+table.sort(EGG_LIST, function(x, y)
+    local rx, ry = rarityWeight(AnimalsData[x].Rarity), rarityWeight(AnimalsData[y].Rarity)
+    if rx ~= ry then return rx > ry end
+    return tostring(x) < tostring(y)
+end)
+for r in pairs(RaritiesData) do table.insert(RARITY_LIST, r) end
+table.sort(RARITY_LIST, function(x, y) return rarityWeight(x) < rarityWeight(y) end)
+for m, d in pairs(MutationsData) do
+    if type(d) == "table" then table.insert(MUTATION_LIST, m) end
+end
+table.sort(MUTATION_LIST, function(x, y)
+    local ox = MutationsData[x].Order or 999
+    local oy = MutationsData[y].Order or 999
+    if ox ~= oy then return ox < oy end
+    return tostring(x) < tostring(y)
+end)
+table.insert(MUTATION_LIST, 1, NO_MUTATION)
+
+-- ─── PAINEL ──────────────────────────────────────────────────────────────────
+local BrainrotAssets = tryRequire("Shared", "BrainrotAssets")
+local filterGui = newProtectedGui("V3ntJumpForEggFilter")
+local filterScale = new("UIScale", { Scale = 1 }, filterGui)
+do
+    local function rs()
+        local cam = workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        filterScale.Scale = math.clamp(math.min(vp.X / 720, vp.Y / 640), 0.5, 1)
+    end
+    rs()
+    pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rs) end)
+end
+
+local panel = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(600, 540), BackgroundColor3 = TH.bg, BorderSizePixel = 0, Visible = false,
+    Active = true, ClipsDescendants = true }, filterGui)
+corner(panel, 14)
+outline(panel, TH.stroke, 1)
+local ptop = new("Frame", { Size = UDim2.new(1, 0, 0, 54), BackgroundColor3 = TH.panel, BorderSizePixel = 0,
+    Active = true }, panel)
+corner(ptop, 14)
+new("Frame", { Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 1, -14), BackgroundColor3 = TH.panel,
+    BorderSizePixel = 0 }, ptop)
+do
+    local line = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 2 }, ptop)
+    U.accentGradient(line)
+end
+text(ptop, { Position = UDim2.fromOffset(16, 8), Size = UDim2.new(1, -220, 0, 20), Text = "Filtro de ovos",
+    FontFace = U.FONT_HEAVY, TextSize = 15 })
+local pSub = text(ptop, { Position = UDim2.fromOffset(16, 28), Size = UDim2.new(1, -220, 0, 16), Text = "",
+    TextColor3 = TH.sub, TextSize = 11 })
+U.draggable(ptop, panel)
+
+-- switch "Ativo" no topo
+local onLabel = text(ptop, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -104, 0.5, 0),
+    Size = UDim2.fromOffset(60, 20), Text = "Ativo", TextXAlignment = Enum.TextXAlignment.Right,
+    FontFace = U.FONT_BOLD, TextSize = 12, TextColor3 = TH.sub })
+local pill = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -54, 0.5, 0),
+    Size = UDim2.fromOffset(40, 22), BackgroundColor3 = TH.off, AutoButtonColor = false, Text = "",
+    BorderSizePixel = 0 }, ptop)
+corner(pill, 11)
+local pillGrad = U.accentGradient(pill)
+pillGrad.Enabled = false
+local knob = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
+    Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, pill)
+corner(knob, 8)
+pill.Activated:Connect(function() setFilterEnabled(not filter.enabled) end)
+local pClose = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, -1),
+    Size = UDim2.fromOffset(30, 30), BackgroundColor3 = TH.card, AutoButtonColor = false, Text = "×",
+    FontFace = U.FONT_BOLD, TextSize = 18, TextColor3 = TH.sub, BorderSizePixel = 0 }, ptop)
+corner(pClose, 15)
+pClose.Activated:Connect(function() panel.Visible = false end)
+
+local body = new("ScrollingFrame", { Position = UDim2.fromOffset(0, 54), Size = UDim2.new(1, 0, 1, -104),
+    BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = TH.accent,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y }, panel)
+new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 14),
+    PaddingRight = UDim.new(0, 16) }, body)
+
+-- rodapé
+local foot = new("Frame", { Position = UDim2.new(0, 0, 1, -50), Size = UDim2.new(1, 0, 0, 50),
+    BackgroundColor3 = TH.panel, BorderSizePixel = 0 }, panel)
+local footHint = text(foot, { Position = UDim2.fromOffset(16, 0), Size = UDim2.new(1, -260, 1, 0), TextSize = 11,
+    TextColor3 = TH.sub, Text = "Categoria sem nada marcado = mostra todos dela." })
+
+local panelOrder = 0
+local function sectionTitle(t)
+    panelOrder = panelOrder + 1
+    return text(body, { Size = UDim2.new(1, 0, 0, 20), Text = string.upper(t), FontFace = U.FONT_BOLD,
+        TextSize = 11, TextColor3 = TH.accent, LayoutOrder = panelOrder })
+end
+local function grid(cell)
+    panelOrder = panelOrder + 1
+    local g = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = panelOrder }, body)
+    new("UIGridLayout", { CellSize = cell, CellPadding = UDim2.fromOffset(8, 8),
+        SortOrder = Enum.SortOrder.LayoutOrder }, g)
+    return g
+end
+
+local selectables = {} -- { paint = fn }
+-- item selecionável (chip ou card): borda e fundo mudam quando marcado
+local function selectable(parent, order, set, key)
+    local b = new("TextButton", { BackgroundColor3 = TH.card, AutoButtonColor = false, Text = "",
+        BorderSizePixel = 0, LayoutOrder = order }, parent)
+    corner(b, 10)
+    local st = outline(b, TH.stroke, 1.5)
+    local check = new("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 6),
+        Size = UDim2.fromOffset(14, 14), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+        Visible = false, ZIndex = 5 }, b)
+    corner(check, 7)
+    U.accentGradient(check, 45)
+    local function paint()
+        local on = set[key] == true
+        st.Color = on and TH.accent or TH.stroke
+        b.BackgroundColor3 = on and TH.cardHover or TH.card
+        check.Visible = on
+    end
+    b.Activated:Connect(function()
+        set[key] = not set[key] or nil
+        paint()
+        filterUpdated()
+    end)
+    paint()
+    table.insert(selectables, paint)
+    return b
+end
+
+-- Raridades
+sectionTitle("Raridades")
+do
+    local g = grid(UDim2.fromOffset(130, 34))
+    for i, r in ipairs(RARITY_LIST) do
+        local b = selectable(g, i, filter.rarities, r)
+        local rd = RaritiesData[r]
+        text(b, { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -30, 1, 0), Text = r,
+            FontFace = U.FONT_BOLD, TextSize = 12, TextColor3 = rd and rd.Color or TH.text, TextWrapped = false,
+            TextTruncate = Enum.TextTruncate.AtEnd })
+    end
+end
+
+-- Mutações (com o ícone do jogo)
+sectionTitle("Mutações")
+do
+    local g = grid(UDim2.fromOffset(130, 34))
+    for i, m in ipairs(MUTATION_LIST) do
+        local b = selectable(g, i, filter.mutations, m)
+        local ic = m ~= NO_MUTATION and mutationIcon(m) or nil
+        if ic then
+            new("ImageLabel", { Position = UDim2.fromOffset(8, 7), Size = UDim2.fromOffset(20, 20),
+                BackgroundTransparency = 1, Image = tostring(ic) }, b)
+        end
+        text(b, { Position = UDim2.fromOffset(ic and 32 or 10, 0), Size = UDim2.new(1, ic and -52 or -30, 1, 0),
+            Text = m == NO_MUTATION and "Sem mutação" or (mutationRich(m) or m), FontFace = U.FONT_BOLD,
+            TextSize = 12, TextWrapped = false, TextTruncate = Enum.TextTruncate.AtEnd })
+    end
+end
+
+-- Ovos (com preview 3D)
+sectionTitle(("Ovos (%d)"):format(#EGG_LIST))
+local eggPreviews = {}
+do
+    local g = grid(UDim2.fromOffset(130, 158))
+    for i, idx in ipairs(EGG_LIST) do
+        local a = AnimalsData[idx]
+        local rd = RaritiesData[a.Rarity]
+        local b = selectable(g, i, filter.eggs, idx)
+        local vp = new("ViewportFrame", { Position = UDim2.fromOffset(8, 8), Size = UDim2.new(1, -16, 0, 96),
+            BackgroundColor3 = TH.panel, BorderSizePixel = 0, Ambient = Color3.fromRGB(200, 200, 200),
+            LightColor = Color3.new(1, 1, 1) }, b)
+        corner(vp, 8)
+        text(b, { Position = UDim2.fromOffset(8, 108), Size = UDim2.new(1, -16, 0, 28),
+            Text = esc(a.DisplayName or idx), FontFace = U.FONT_BOLD, TextSize = 11,
+            TextYAlignment = Enum.TextYAlignment.Top })
+        text(b, { Position = UDim2.fromOffset(8, 136), Size = UDim2.new(1, -16, 0, 14), Text = tostring(a.Rarity or ""),
+            TextSize = 10, TextColor3 = rd and rd.Color or TH.sub, FontFace = U.FONT_BOLD })
+        table.insert(eggPreviews, { vp = vp, index = idx, loaded = false })
+    end
+end
+
+-- carrega os previews só quando o painel abre (o jogo pode baixar o modelo)
+local function loadPreview(p)
+    if p.loaded then return end
+    p.loaded = true
+    task.spawn(function()
+        local model
+        if BrainrotAssets and type(BrainrotAssets.getModel) == "function" then
+            local ok, m = pcall(BrainrotAssets.getModel, p.index, 5)
+            if ok and typeof(m) == "Instance" then model = m end
+        end
+        if not model then
+            pcall(function()
+                local mf = ReplicatedStorage:FindFirstChild("Models")
+                local an = mf and mf:FindFirstChild("Animals")
+                model = an and an:FindFirstChild(p.index)
+            end)
+        end
+        if not model then return end
+        local copy = cloneForPreview(model)
+        if not copy then return end
+        local cam = new("Camera", { FieldOfView = 40 }, p.vp)
+        p.vp.CurrentCamera = cam
+        local world = new("WorldModel", {}, p.vp)
+        copy.Parent = world
+        local cf, size = copy:GetBoundingBox()
+        p.center, p.radius, p.cam = cf.Position, math.max(size.Magnitude / 2, 1), cam
+        p.angle = math.random() * math.pi * 2
+    end)
+end
+
+table.insert(conns, RunService.RenderStepped:Connect(safe("filter preview", function(dt)
+    if not panel.Visible then return end
+    for _, p in ipairs(eggPreviews) do
+        if p.cam then
+            p.angle = p.angle + dt * 0.7
+            local d = p.radius / math.tan(math.rad(20)) * 1.1
+            p.cam.CFrame = CFrame.lookAt(p.center + Vector3.new(math.sin(p.angle) * d, p.radius * 0.4,
+                math.cos(p.angle) * d), p.center)
+        end
+    end
+end)))
+
+-- botões do rodapé
+do
+    local clear = pillButton(foot, "Limpar tudo", "plain", { AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -132, 0.5, 0), Size = UDim2.fromOffset(110, 30) })
+    clear.Activated:Connect(function()
+        -- limpa os conjuntos no lugar (os botões guardam a referência deles)
+        for _, set in ipairs({ filter.eggs, filter.rarities, filter.mutations }) do
+            for k in pairs(set) do set[k] = nil end
+        end
+        filterUpdated()
+    end)
+    local done = pillButton(foot, "Pronto", "green", { AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(110, 30) })
+    done.Activated:Connect(function() panel.Visible = false end)
+end
+
+filterChanged = function()
+    for _, paint in ipairs(selectables) do paint() end
+    pillGrad.Enabled = filter.enabled
+    tween(pill, 0.18, { BackgroundColor3 = filter.enabled and Color3.new(1, 1, 1) or TH.off })
+    tween(knob, 0.18, { Position = UDim2.new(0, filter.enabled and 21 or 3, 0.5, 0) })
+    onLabel.TextColor3 = filter.enabled and TH.text or TH.sub
+    local ne, nr, nm = 0, 0, 0
+    for _ in pairs(filter.eggs) do ne = ne + 1 end
+    for _ in pairs(filter.rarities) do nr = nr + 1 end
+    for _ in pairs(filter.mutations) do nm = nm + 1 end
+    pSub.Text = ("%s  ·  %d ovos  ·  %d raridades  ·  %d mutações marcadas"):format(
+        filter.enabled and "Ligado" or "Desligado", ne, nr, nm)
+end
+filterChanged()
+
+local function openFilterPanel()
+    panel.Visible = true
+    for _, p in ipairs(eggPreviews) do loadPreview(p) end
+end
 
 -- ═══ TRAMPOLIM: STATUS + AUTO UPGRADE ════════════════════════════════════════
 -- Lê o que o próprio jogo mostra (só leitura):
@@ -2090,7 +2520,7 @@ local function shutdown()
     pcall(cancelJob)
     pcall(Fly.stop)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    for _, g in ipairs({ sg, hubGui, mainGui }) do pcall(function() g:Destroy() end) end
+    for _, g in ipairs({ sg, hubGui, mainGui, filterGui }) do pcall(function() g:Destroy() end) end
 end
 
 local function buildMainUI()
@@ -2124,6 +2554,15 @@ local function buildMainUI()
     flySec:CreateButton({ Name = "Pousar", Note = "Vai pra ilha mais próxima (ou pro seu plot).",
         ButtonText = "Pousar", Callback = function() task.spawn(Fly.landSafe) end })
 
+    -- Filtro
+    local filterTab = window:CreateTab({ Name = "Filtro" })
+    local fsec = filterTab:CreateSection({ Name = "Filtro de ovos" })
+    filterToggleOpt = fsec:CreateToggle({ Name = "Filtro ativo",
+        Note = "Só mostra no hub e no ESP os ovos que passam no filtro.", Default = filter.enabled,
+        Callback = function(v) setFilterEnabled(v, true) end })
+    fsec:CreateButton({ Name = "Escolher ovos, raridades e mutações", Note = "Abre o painel com todos os ovos do jogo.",
+        ButtonText = "Abrir", Callback = function() openFilterPanel() end })
+
     -- Base
     local baseTab = window:CreateTab({ Name = "Base" })
     local auto = baseTab:CreateSection({ Name = "Automático" })
@@ -2137,6 +2576,35 @@ local function buildMainUI()
     remoteToggle("Auto colocar ovo", "Coloca o ovo que você carrega quando estiver no seu plot.", "egg", eggRemote)
     remoteToggle("Auto colocar brainrot", "Coloca o brainrot que você carrega no seu plot.", "brainrot", brainRemote)
     remoteToggle("Auto upgrade trampolim", "Compra o próximo tier quando a placa do jogo liberar.", "upgrade", upgradeRemote)
+    local manual = baseTab:CreateSection({ Name = "Manual" })
+    manual:CreateButton({ Name = "Colocar ovo agora", Note = "Coloca o ovo que você está carregando no seu plot.",
+        ButtonText = "Colocar", Callback = function()
+            if LP:GetAttribute("CarryingJumpEgg") ~= true then
+                return notifyProblem("Você não está carregando nenhum ovo", "Pegue um ovo (botão Coletar no hub) e tente de novo.", "warn", 6)
+            end
+            if not onOwnPlot() then
+                return notifyProblem("Você não está em cima do seu plot", "Ande até o chão do seu plot e clique de novo.", "warn", 6)
+            end
+            if not eggRemote then
+                return notifyProblem("Não dá pra colocar ovos agora", "O jogo pode ter atualizado (remote não encontrada). Reinicie o script.")
+            end
+            eggRemote:FireServer()
+            log("RequestEggPlace (manual)")
+            task.spawn(function()
+                if waitAttr("CarryingJumpEgg", false, 3) then
+                    notify("Ovo colocado no seu plot!", "ok", 5)
+                else
+                    local used, cap = plotOccupancy()
+                    if used and cap and used >= cap then
+                        notifyProblem(("Seu plot está cheio (%d/%d)"):format(used, cap),
+                            "Choque, venda ou pegue um ovo/pet do plot pra liberar espaço.")
+                    else
+                        notifyProblem("O servidor não aceitou colocar o ovo",
+                            "Seu plot pode estar sem espaço livre. Libere um lugar e tente de novo.")
+                    end
+                end
+            end)
+        end })
 
     -- Status
     local statusTab = window:CreateTab({ Name = "Status" })
