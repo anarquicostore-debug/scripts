@@ -413,13 +413,13 @@ local function flyTo(getTarget, onDone, ignore)
             local total, prev = 0, h.Position
             for _, p in ipairs(wp) do total = total + (p - prev).Magnitude; prev = p end
             f.wp, f.idx, f.goal = wp, 1, goal
-            f.lastPos, f.lastCheck = h.Position, os.clock()
+            f.best, f.bestAt = nil, nil
             f.deadline = os.clock() + total / FLY.speed * 1.5 + 10
             setStatus(("Voando: %d pontos de rota"):format(#wp), 60, 200, 100)
         end)
     end
 
-    f.conn = RunService.Heartbeat:Connect(function()
+    f.conn = RunService.Heartbeat:Connect(function(dt)
         local _, h, hm = getChar()
         if not h or h ~= hrp then return stopFly(false) end
         local goal = getTarget()
@@ -428,34 +428,44 @@ local function flyTo(getTarget, onDone, ignore)
             lv.VectorVelocity = Vector3.zero
             return
         end
-        -- alvo mudou de lugar: recalcula
+        -- alvo mudou de lugar: recalcula (no máximo 10 vezes)
         if (goal - f.goal).Magnitude > 6 then
             f.goal = goal
+            f.moves = (f.moves or 0) + 1
+            if f.moves > 10 then return stopFly(false) end
             return replan()
         end
-        if os.clock() > f.deadline then return stopFly(false) end
+        if os.clock() > f.deadline then
+            log("voo cancelado: passou do tempo")
+            return stopFly(false)
+        end
 
         local p = f.wp[f.idx]
         local delta = p - h.Position
         local dist = delta.Magnitude
         local last = f.idx == #f.wp
-        if dist < (last and 1.5 or 3) then
+        if dist <= (last and 2 or 4) then
             if last then return stopFly(true) end
             f.idx = f.idx + 1
+            f.best, f.bestAt = nil, nil
             return
         end
-        local spd = last and math.min(FLY.speed, dist * 6) or FLY.speed
+        -- nunca anda mais que a distância que falta neste frame: em velocidade
+        -- alta o personagem passava do ponto e ficava indo e voltando pra sempre
+        local spd = math.min(FLY.speed, dist / math.max(dt, 1 / 240) * 0.8)
         lv.VectorVelocity = delta.Unit * spd
         if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
 
-        -- travou em algo (não andou 1 stud em 0,7s): recalcula a partir daqui
-        if os.clock() - f.lastCheck > 0.7 then
-            if (h.Position - f.lastPos).Magnitude < 1 then
-                f.replans = f.replans + 1
-                if f.replans > 3 then return stopFly(false) end
-                return replan()
-            end
-            f.lastPos, f.lastCheck = h.Position, os.clock()
+        -- sem progresso por 1,5s (preso ou sendo puxado de volta): recalcula
+        local now = os.clock()
+        if not f.best or dist < f.best - 0.5 then
+            f.best, f.bestAt = dist, now
+        elseif now - f.bestAt > 1.5 then
+            f.replans = f.replans + 1
+            log(("sem progresso (%.0f studs do ponto %d), tentativa %d"):format(dist, f.idx, f.replans))
+            if f.replans > 3 then return stopFly(false) end
+            f.best, f.bestAt = nil, nil
+            return replan()
         end
     end)
 
@@ -534,7 +544,7 @@ speedBox.Parent = frame
 Instance.new("UICorner", speedBox).CornerRadius = UDim.new(0, 6)
 speedBox.FocusLost:Connect(function()
     local n = tonumber(speedBox.Text)
-    if n then FLY.speed = math.clamp(n, 10, 500) end
+    if n then FLY.speed = math.clamp(n, 10, 999) end
     speedBox.Text = tostring(FLY.speed)
 end)
 
