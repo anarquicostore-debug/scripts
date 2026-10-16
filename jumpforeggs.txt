@@ -16,6 +16,14 @@ local LP = Players.LocalPlayer
 
 local function log(...) print("[JumpForEggs]", ...) end
 
+-- Envolve callbacks: um erro nunca derruba o script nem trava o player.
+local function safe(label, fn)
+    return function(...)
+        local ok, err = pcall(fn, ...)
+        if not ok then log("erro em " .. label .. ":", err) end
+    end
+end
+
 -- ─── RESOLVER DE REMOTES ──────────────────────────────────────────────────────
 local getupvals = (debug and debug.getupvalues) or getupvalues
 local getinfo   = debug and debug.getinfo
@@ -246,25 +254,79 @@ local function setStatus(msg, r, g, b)
     status.TextColor3 = Color3.fromRGB(r or 130, g or 130, b or 130)
 end
 
--- ─── FLY INTELIGENTE ──────────────────────────────────────────────────────────
--- Movimento físico com LinearVelocity (igual launchFromPad, linha 555), seguindo
--- uma rota calculada com Spherecast para não bater em ilhas:
---   início → A (desvia pro lado até achar céu livre)
---          → B (sobe/desce reto até a altitude de cruzeiro)
---          → C (vai de lado na altitude, até em cima/ao lado do alvo)
---          → D (desce até a altura do alvo, ao lado dele se tiver teto)
---          → alvo
--- A altitude de cruzeiro tenta primeiro a altura do ovo; se tiver ilha no meio
--- do caminho, sobe em degraus de 25 studs até achar uma linha livre.
-local FLY = { speed = 60, radius = 2.5 }
+-- ─── NOTIFICAÇÕES (topo da tela, somem depois de 10s) ─────────────────────────
+local notifHolder = Instance.new("Frame")
+notifHolder.Name = "Notifs"
+notifHolder.Size = UDim2.new(0, 420, 0, 0)
+notifHolder.Position = UDim2.new(0.5, -210, 0, 12)
+notifHolder.AutomaticSize = Enum.AutomaticSize.Y
+notifHolder.BackgroundTransparency = 1
+notifHolder.Parent = sg
+local notifLayout = Instance.new("UIListLayout", notifHolder)
+notifLayout.Padding = UDim.new(0, 6)
+notifLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+local function notify(msg, color, seconds)
+    log("[notif]", msg)
+    pcall(function()
+        local box = Instance.new("TextLabel")
+        box.Size = UDim2.new(1, 0, 0, 0)
+        box.AutomaticSize = Enum.AutomaticSize.Y
+        box.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+        box.BackgroundTransparency = 0.1
+        box.BorderSizePixel = 0
+        box.Font, box.TextSize = Enum.Font.GothamBold, 14
+        box.TextWrapped = true
+        box.TextColor3 = Color3.new(1, 1, 1)
+        box.Text = msg
+        box.Parent = notifHolder
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+        local pad = Instance.new("UIPadding", box)
+        pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 10), UDim.new(0, 10)
+        pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
+        local st = Instance.new("UIStroke", box)
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st.Color = color or Color3.fromRGB(220, 160, 60)
+        st.Thickness = 1.5
+        task.delay(seconds or 10, function()
+            pcall(function()
+                local ti = TweenInfo.new(0.4)
+                TweenService:Create(box, ti, { BackgroundTransparency = 1, TextTransparency = 1 }):Play()
+                TweenService:Create(st, ti, { Transparency = 1 }):Play()
+                task.wait(0.45)
+                box:Destroy()
+            end)
+        end)
+    end)
+end
+
+-- ─── FLY ──────────────────────────────────────────────────────────────────────
+-- Movimento físico com LinearVelocity (igual launchFromPad, linha 555) seguindo
+-- uma rota calculada com Spherecast:
+--   início → desvia pro lado até achar céu livre → sobe/desce reto até a
+--   altitude de cruzeiro → vai de lado → desce ao lado/em cima do alvo → alvo
+-- Proteções:
+--   • rota testada com folga do tamanho do personagem; se não achar, tenta com
+--     folga menor e, no fim, uma rota alta sem teste;
+--   • olha à frente a cada frame e freia antes de bater em algo;
+--   • se o servidor puxar de volta ou não houver progresso, baixa a velocidade e
+--     recalcula (até 6 vezes) em vez de parar;
+--   • qualquer erro limpa tudo (sem forças presas no personagem);
+--   • se parar no ar (alvo sumiu, travou, erro, cancelado), leva o player pra
+--     ilha mais próxima, ou pro próprio plot, em vez de deixar cair.
+local FLY = { speed = 60, radius = 4 }
 local flying = nil
+local landing = false
+local safeLand -- definida abaixo
 
 local function castParams(extraIgnore)
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
     local ignore = {}
     if LP.Character then table.insert(ignore, LP.Character) end
-    for _, x in ipairs(extraIgnore or {}) do table.insert(ignore, x) end
+    for _, x in ipairs(extraIgnore or {}) do
+        if typeof(x) == "Instance" then table.insert(ignore, x) end
+    end
     p.FilterDescendantsInstances = ignore
     p.RespectCanCollide = true
     p.IgnoreWater = true
@@ -272,19 +334,17 @@ local function castParams(extraIgnore)
 end
 
 local casts = 0
-local function clear(a, b, params)
+-- Spherecast dá erro acima de 1024 studs: testa em trechos de 900.
+local function clear(a, b, params, radius)
     local d = b - a
-    if d.Magnitude < 0.5 then return true end
-    -- Spherecast dá erro acima de 1024 studs: testa em trechos de 900.
     local len = d.Magnitude
-    local dir = d.Unit
-    local from = a
-    local done = 0
+    if len < 0.5 then return true end
+    local dir, from, done = d.Unit, a, 0
     while done < len do
         local step = math.min(900, len - done)
         casts = casts + 1
-        if casts % 250 == 0 then task.wait() end -- não travar o jogo
-        if workspace:Spherecast(from, FLY.radius, dir * step, params) then return false end
+        if casts % 250 == 0 then task.wait() end
+        if workspace:Spherecast(from, radius, dir * step, params) then return false end
         from = from + dir * step
         done = done + step
     end
@@ -304,78 +364,139 @@ end
 local START_OFFSETS = ringOffsets({ 12, 25, 45, 70, 100, 140 }, 16)
 local GOAL_OFFSETS  = ringOffsets({ 10, 20, 35, 55 }, 8)
 
--- Devolve a lista de waypoints, ou nil se não achar rota livre.
-local function planPath(start, goal, params)
+local function planPath(start, goal, params, radius)
     casts = 0
-    if clear(start, goal, params) and math.abs(start.Y - goal.Y) < 8 then
-        return { goal } -- linha reta livre e quase na mesma altura
+    if math.abs(start.Y - goal.Y) < 8 and clear(start, goal, params, radius) then
+        return { goal }
     end
     local alts = { goal.Y }
     local base = math.max(goal.Y, start.Y)
     for k = 1, 10 do table.insert(alts, base + k * 25) end
-
     for _, alt in ipairs(alts) do
-        -- pontos de saída: andar de lado (A) e depois subir reto até alt (B)
         local outs = {}
         for _, off in ipairs(START_OFFSETS) do
             local A = start + off
             local B = Vector3.new(A.X, alt, A.Z)
-            if clear(start, A, params) and clear(A, B, params) then
+            if clear(start, A, params, radius) and clear(A, B, params, radius) then
                 table.insert(outs, { A = A, B = B })
                 if #outs >= 6 then break end
             end
         end
-        -- pontos de chegada: descer reto de alt até D e ir de lado até o alvo
         local ins = {}
         if #outs > 0 then
             for _, off in ipairs(GOAL_OFFSETS) do
                 local D = goal + off
                 local C = Vector3.new(D.X, alt, D.Z)
-                if clear(C, D, params) and clear(D, goal, params) then
+                if clear(C, D, params, radius) and clear(D, goal, params, radius) then
                     table.insert(ins, { C = C, D = D })
                     if #ins >= 6 then break end
                 end
             end
         end
-        -- liga uma saída a uma chegada por uma linha reta na altitude
         for _, o in ipairs(outs) do
             for _, i in ipairs(ins) do
-                if clear(o.B, i.C, params) then
+                if clear(o.B, i.C, params, radius) then
                     local wp = {}
                     for _, p in ipairs({ o.A, o.B, i.C, i.D, goal }) do
                         local last = wp[#wp] or start
                         if (p - last).Magnitude > 1 then table.insert(wp, p) end
                     end
-                    log(("Rota: %d pontos, altitude %.0f, %d testes"):format(#wp, alt, casts))
+                    log(("Rota: %d pontos, altitude %.0f, folga %.1f, %d testes"):format(#wp, alt, radius, casts))
                     return wp
                 end
             end
         end
     end
-    log("Sem rota livre (" .. casts .. " testes)")
     return nil
 end
 
-local function stopFly(reached)
+-- Tenta folgas menores e, por último, uma rota alta sem teste.
+local function planWithFallback(start, goal, ignore)
+    local params = castParams(ignore)
+    for _, r in ipairs({ FLY.radius, 3, 2 }) do
+        local ok, wp = pcall(planPath, start, goal, params, r)
+        if ok and wp then return wp end
+        if not ok then log("erro na rota (folga " .. r .. "):", wp) end
+    end
+    log("sem rota testada: usando rota alta de reserva")
+    local alt = math.max(start.Y, goal.Y) + 200
+    return { Vector3.new(start.X, alt, start.Z), Vector3.new(goal.X, alt, goal.Z), goal }
+end
+
+-- Chão sólido logo abaixo de pos (nil se não tiver).
+local function groundBelow(pos, params, depth)
+    local ok, r = pcall(function()
+        return workspace:Raycast(pos, Vector3.new(0, -(depth or 1000), 0), params)
+    end)
+    if ok and r and r.Instance and r.Normal.Y > 0.6 then return r.Position end
+end
+
+local function plotLanding()
+    local plot = getOwnPlot()
+    local floor = plot and plot:FindFirstChild("Floor")
+    if floor and floor:IsA("BasePart") then
+        return floor.Position + Vector3.new(0, floor.Size.Y / 2 + 4, 0)
+    end
+end
+
+-- Ilha mais próxima: chão direto embaixo, senão procura em anéis em volta.
+local function findSafeGround(origin)
+    local params = castParams()
+    local g = groundBelow(origin, params, 400)
+    if g then return g + Vector3.new(0, 4, 0) end
+    for _, rad in ipairs({ 30, 60, 110, 180, 280, 420, 650, 1000 }) do
+        local best, bestD
+        for i = 0, 15 do
+            local ang = i / 16 * math.pi * 2
+            local p = origin + Vector3.new(math.cos(ang) * rad, 150, math.sin(ang) * rad)
+            local hit = groundBelow(p, params, 2500)
+            if hit then
+                local d = (hit - origin).Magnitude
+                if not bestD or d < bestD then best, bestD = hit, d end
+            end
+        end
+        if best then return best + Vector3.new(0, 4, 0) end
+    end
+    return plotLanding()
+end
+
+local function inAirWithoutGround(hrp, hum)
+    if hum.FloorMaterial ~= Enum.Material.Air then return false end
+    return groundBelow(hrp.Position, castParams(), 40) == nil
+end
+
+local function cleanup(f)
+    f.alive = false
+    if f.conn then pcall(function() f.conn:Disconnect() end) end
+    pcall(function() f.lv:Destroy() end)
+    pcall(function() f.att:Destroy() end)
+    local _, hrp = getChar()
+    if hrp then pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end) end
+end
+
+-- reason: "ok", "lost" (alvo sumiu), "stuck", "timeout", "error", "nochar",
+--         "cancel" (usuário), "replace" (outro voo começou)
+local function stopFly(reason)
     local f = flying
     if not f then return end
     flying = nil
-    f.alive = false
-    f.conn:Disconnect()
-    f.lv:Destroy()
-    f.att:Destroy()
-    local _, hrp = getChar()
-    if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
-    if f.onDone then task.spawn(f.onDone, reached == true) end
+    cleanup(f)
+    reason = reason or "cancel"
+    if f.onDone then task.spawn(pcall, f.onDone, reason == "ok", reason) end
+    -- parou no meio do nada: leva pro chão
+    if not f.isLanding and reason ~= "ok" and reason ~= "replace" and reason ~= "nochar" then
+        task.spawn(function() safeLand() end)
+    end
 end
 
 -- getTarget: devolve a posição alvo (Vector3) ou nil se o alvo sumiu.
 -- ignore: instâncias que não contam como obstáculo (ex.: o próprio ovo).
-local function flyTo(getTarget, onDone, ignore)
-    stopFly(false)
+local function flyTo(getTarget, onDone, ignore, isLanding)
+    stopFly("replace")
     local _, hrp = getChar()
     if not hrp then return false end
-    if not getTarget() then return false end
+    local okT, firstGoal = pcall(getTarget)
+    if not okT or typeof(firstGoal) ~= "Vector3" then return false end
 
     local att = Instance.new("Attachment")
     att.Name = "JFE_FlyAtt"
@@ -386,86 +507,121 @@ local function flyTo(getTarget, onDone, ignore)
     lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
     lv.RelativeTo = Enum.ActuatorRelativeTo.World
     lv.MaxForce = math.huge
-    lv.VectorVelocity = Vector3.zero -- fica parado no ar enquanto calcula
+    lv.VectorVelocity = Vector3.zero -- parado no ar enquanto calcula
     lv.Parent = hrp
 
-    local f = { alive = true, lv = lv, att = att, onDone = onDone, wp = nil, idx = 1, replans = 0 }
+    local f = {
+        alive = true, lv = lv, att = att, onDone = onDone, isLanding = isLanding,
+        wp = nil, idx = 1, tries = 0, mul = 1, moves = 0, ignore = ignore,
+    }
     flying = f
+
+    local function target()
+        local ok, t = pcall(getTarget)
+        if ok and typeof(t) == "Vector3" then return t end
+    end
 
     local function replan()
         local _, h = getChar()
-        local goal = getTarget()
-        if not (h and goal) then return stopFly(false) end
+        local goal = target()
+        if not h then return stopFly("nochar") end
+        if not goal then return stopFly("lost") end
         f.wp = nil
         setStatus("Calculando rota...", 130, 130, 130)
         task.spawn(function()
-            local ok, wp = pcall(planPath, h.Position, goal, castParams(ignore))
-            if not f.alive then return end
-            if not ok then
+            local ok, wp = pcall(planWithFallback, h.Position, goal, ignore)
+            if not f.alive or flying ~= f then return end
+            if not ok or not wp then
                 log("erro na rota:", wp)
-                setStatus("Erro ao calcular rota (veja F9).", 220, 60, 60)
-                return stopFly(false)
-            end
-            if not wp then
-                setStatus("Sem rota livre até o alvo.", 220, 60, 60)
-                return stopFly(false)
+                return stopFly("error")
             end
             local total, prev = 0, h.Position
             for _, p in ipairs(wp) do total = total + (p - prev).Magnitude; prev = p end
             f.wp, f.idx, f.goal = wp, 1, goal
-            f.best, f.bestAt = nil, nil
-            f.deadline = os.clock() + total / FLY.speed * 1.5 + 10
-            setStatus(("Voando: %d pontos de rota"):format(#wp), 60, 200, 100)
+            f.best, f.bestAt, f.prevDist = nil, nil, nil
+            f.deadline = os.clock() + total / math.max(FLY.speed * f.mul, 20) * 2 + 15
+            setStatus(("Voando (%d pontos, vel. %d)"):format(#wp, math.floor(FLY.speed * f.mul)), 60, 200, 100)
         end)
     end
 
-    f.conn = RunService.Heartbeat:Connect(function(dt)
+    -- não andou / foi puxado de volta: menos velocidade e nova rota
+    local function struggle(why)
+        f.tries = f.tries + 1
+        f.mul = math.max(f.mul * 0.5, 40 / math.max(FLY.speed, 40))
+        log(("%s — tentativa %d, velocidade agora %d"):format(why, f.tries, math.floor(FLY.speed * f.mul)))
+        if f.tries > 6 then return stopFly("stuck") end
+        replan()
+    end
+
+    local function step(dt)
         local _, h, hm = getChar()
-        if not h or h ~= hrp then return stopFly(false) end
-        local goal = getTarget()
-        if not goal then return stopFly(false) end
+        if not h or h ~= hrp or not lv.Parent then return stopFly("nochar") end
+        local goal = target()
+        if not goal then return stopFly("lost") end
         if not f.wp then
             lv.VectorVelocity = Vector3.zero
             return
         end
-        -- alvo mudou de lugar: recalcula (no máximo 10 vezes)
         if (goal - f.goal).Magnitude > 6 then
             f.goal = goal
-            f.moves = (f.moves or 0) + 1
-            if f.moves > 10 then return stopFly(false) end
+            f.moves = f.moves + 1
+            if f.moves > 15 then return stopFly("lost") end
             return replan()
         end
-        if os.clock() > f.deadline then
-            log("voo cancelado: passou do tempo")
-            return stopFly(false)
-        end
+        if os.clock() > f.deadline then return stopFly("timeout") end
 
         local p = f.wp[f.idx]
         local delta = p - h.Position
         local dist = delta.Magnitude
         local last = f.idx == #f.wp
         if dist <= (last and 2 or 4) then
-            if last then return stopFly(true) end
+            if last then return stopFly("ok") end
             f.idx = f.idx + 1
-            f.best, f.bestAt = nil, nil
+            f.best, f.bestAt, f.prevDist = nil, nil, nil
             return
         end
-        -- nunca anda mais que a distância que falta neste frame: em velocidade
-        -- alta o personagem passava do ponto e ficava indo e voltando pra sempre
-        local spd = math.min(FLY.speed, dist / math.max(dt, 1 / 240) * 0.8)
-        lv.VectorVelocity = delta.Unit * spd
+
+        local dir = delta.Unit
+        local spd = FLY.speed * f.mul
+        -- não passa do ponto neste frame
+        spd = math.min(spd, dist / math.max(dt, 1 / 240) * 0.8)
+        -- olha à frente e freia antes de bater
+        local look = math.min(dist, spd * dt * 4 + 6)
+        local okC, hit = pcall(function()
+            return workspace:Spherecast(h.Position, 2.5, dir * look, castParams(ignore))
+        end)
+        if okC and hit then
+            if hit.Distance < 2 then
+                lv.VectorVelocity = Vector3.zero
+                return struggle("obstáculo à frente")
+            end
+            spd = math.min(spd, hit.Distance / math.max(dt, 1 / 240) * 0.4)
+        end
+        lv.VectorVelocity = dir * spd
         if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
 
-        -- sem progresso por 1,5s (preso ou sendo puxado de volta): recalcula
+        -- puxado de volta pelo servidor (distância aumentou de repente)
+        if f.prevDist and dist > f.prevDist + 12 then
+            f.prevDist = dist
+            return struggle("servidor puxou de volta")
+        end
+        f.prevDist = dist
+
+        -- sem progresso por 1,5s
         local now = os.clock()
         if not f.best or dist < f.best - 0.5 then
             f.best, f.bestAt = dist, now
         elseif now - f.bestAt > 1.5 then
-            f.replans = f.replans + 1
-            log(("sem progresso (%.0f studs do ponto %d), tentativa %d"):format(dist, f.idx, f.replans))
-            if f.replans > 3 then return stopFly(false) end
             f.best, f.bestAt = nil, nil
-            return replan()
+            return struggle("sem progresso")
+        end
+    end
+
+    f.conn = RunService.Heartbeat:Connect(function(dt)
+        local ok, err = pcall(step, dt)
+        if not ok then
+            log("erro no voo:", err)
+            stopFly("error")
         end
     end)
 
@@ -473,13 +629,78 @@ local function flyTo(getTarget, onDone, ignore)
     return true
 end
 
--- Versão que espera: devolve true se chegou.
+-- Versão que espera: devolve (chegou, motivo).
 local function flyWait(getTarget, ignore)
-    local done, reached = false, false
-    if not flyTo(getTarget, function(r) done, reached = true, r end, ignore) then return false end
+    local done, reached, reason = false, false, nil
+    if not flyTo(getTarget, function(r, why) done, reached, reason = true, r, why end, ignore) then
+        return false, "lost"
+    end
     while not done do task.wait() end
-    return reached
+    return reached, reason
 end
+
+-- Segura o personagem parado no ar (ex.: esperando o Grab). Devolve release().
+local function holdPosition()
+    local _, hrp = getChar()
+    if not hrp then return function() end end
+    local pos = hrp.Position
+    local att = Instance.new("Attachment")
+    att.Parent = hrp
+    local lv = Instance.new("LinearVelocity")
+    lv.Attachment0 = att
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.MaxForce = math.huge
+    lv.Parent = hrp
+    local conn = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            -- nunca briga com o voo: desliga enquanto outro voo estiver ativo
+            lv.Enabled = flying == nil
+            local d = pos - hrp.Position
+            lv.VectorVelocity = d.Magnitude > 0.3 and d * 5 or Vector3.zero
+        end)
+    end)
+    return function()
+        pcall(function() conn:Disconnect() end)
+        pcall(function() lv:Destroy() end)
+        pcall(function() att:Destroy() end)
+    end
+end
+
+-- Leva o player pra ilha mais próxima (ou pro plot) se estiver no ar sem chão.
+safeLand = function()
+    if landing or flying then return end
+    local _, hrp, hum = getChar()
+    if not hrp then return end
+    local okAir, air = pcall(inAirWithoutGround, hrp, hum)
+    if not okAir or not air then return end
+    landing = true
+    local release = holdPosition() -- não cai enquanto procura
+    local okG, ground = pcall(findSafeGround, hrp.Position)
+    release()
+    if not okG or not ground then
+        landing = false
+        notify("⚠ Não achei chão perto. Voo liberado.", Color3.fromRGB(220, 60, 60))
+        return
+    end
+    setStatus("Levando você pra ilha mais próxima...", 220, 160, 60)
+    local started = flyTo(function() return ground end, function(ok, why)
+        if ok or why == "replace" then
+            landing = false
+            if ok then setStatus("Pousou em segurança.", 60, 200, 100) end
+            return
+        end
+        -- reserva: o próprio plot
+        local plotPos = plotLanding()
+        if plotPos and (plotPos - ground).Magnitude > 5 then
+            flyTo(function() return plotPos end, function() landing = false end, nil, true)
+        else
+            landing = false
+        end
+    end, nil, true)
+    if not started then landing = false end
+end
+
 
 
 local toggles = {}
@@ -504,12 +725,12 @@ local function makeToggle(key, label, y, enabled, onChange)
             BackgroundColor3 = toggles[key] and Color3.fromRGB(30, 140, 60) or Color3.fromRGB(170, 20, 20)
         }):Play()
     end
-    btn.MouseButton1Click:Connect(function()
+    btn.MouseButton1Click:Connect(safe("toggle " .. key, function()
         if not enabled then return end
         toggles[key] = not toggles[key]
         paint()
         if onChange then onChange(toggles[key]) end
-    end)
+    end))
     paint()
 end
 
@@ -554,8 +775,7 @@ local autoCollect, currentJob, cancelJob, startEggJob -- definidos no Hub
 local conns = {}
 closeBtn.MouseButton1Click:Connect(function()
     alive = false
-    if cancelJob then cancelJob() end
-    stopFly(false)
+    pcall(function() if cancelJob then cancelJob() else stopFly("cancel") end end)
     for _, c in ipairs(conns) do c:Disconnect() end
     sg:Destroy()
 end)
@@ -564,7 +784,7 @@ end)
 -- cooldown 0.3s, velY <= 10, no chão ou caindo (velY <= -10), em cima do pad.
 local launches, lastLaunch = 0, 0
 local LAUNCH_CD = 0.35
-table.insert(conns, RunService.Heartbeat:Connect(function()
+table.insert(conns, RunService.Heartbeat:Connect(safe("farm", function()
     if not (toggles.farm and launchRemote) then return end
     local _, hrp, hum = getChar()
     if not hrp then return end
@@ -587,7 +807,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
         -- você continua em cima dele e não precisa voar de volta).
         local rel = pad.CFrame:PointToObjectSpace(hrp.Position)
         local outside = not isOverPad(pad, Vector3.new(rel.X, 0, rel.Z), 1, height)
-        if outside and not flying and not currentJob then
+        if outside and not flying and not currentJob and not landing then
             flyTo(function()
                 if not pad.Parent then return nil end
                 return (pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + hum.HipHeight + hrp.Size.Y / 2, 0)).Position
@@ -605,7 +825,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
     elseif not over then
         setStatus("Fique em cima do trampolim (ou ligue Teleportar).", 220, 160, 60)
     end
-end))
+end)))
 
 -- Ovo / brainrot / upgrade: checa a cada 1s.
 task.spawn(function()
@@ -1060,11 +1280,23 @@ end
 autoCollect = false
 currentJob = nil
 
-function cancelJob()
+local function resetButton(j)
+    if j and j.button then pcall(function() if j.button.Parent then j.button.Text = "VOAR" end end) end
+end
+
+-- land=false quando outro job vai começar logo em seguida.
+function cancelJob(land)
     local j = currentJob
     currentJob = nil
-    if j and j.button and j.button.Parent then j.button.Text = "VOAR" end
-    stopFly(false)
+    if j then
+        j.cancelled = true
+        if j.release then pcall(j.release) end
+        resetButton(j)
+    end
+    local wasFlying = flying ~= nil
+    stopFly(land == false and "replace" or "cancel")
+    -- estava parado no ar (SOLTAR / pegando ovo): leva pro chão
+    if land ~= false and not wasFlying then task.spawn(safeLand) end
 end
 
 paintAuto()
@@ -1073,21 +1305,13 @@ local HIDDEN_POS = Vector3.new(10000, 10000, 10000)
 
 local function eggTarget(model)
     return function()
-        if not model.Parent then return nil end
+        if not model.Parent or not model:IsDescendantOf(workspace) then return nil end
         local p = model:GetPivot().Position
         -- Ovo pego por alguém vai pra exatamente (10000, 10000, 10000)
-        -- (WorldBrainrotController:111). Ovos da pista de pulo ficam bem alto
-        -- (Y ~6500), então não dá pra usar só a altura.
+        -- (WorldBrainrotController:111). Ovos da pista ficam bem alto (Y ~6500).
         if (p - HIDDEN_POS).Magnitude < 5 then return nil end
         return p + Vector3.new(0, 4, 0)
     end
-end
-
-local function plotTarget()
-    local plot = getOwnPlot()
-    local floor = plot and plot:FindFirstChild("Floor")
-    if not (floor and floor:IsA("BasePart")) then return nil end
-    return floor.Position + Vector3.new(0, floor.Size.Y / 2 + 4, 0)
 end
 
 local function waitAttr(name, value, timeout)
@@ -1099,73 +1323,114 @@ local function waitAttr(name, value, timeout)
     return LP:GetAttribute(name) == value
 end
 
+local REASON_TEXT = {
+    lost = "o alvo sumiu", stuck = "travou no caminho", timeout = "demorou demais",
+    error = "erro no voo", nochar = "personagem não encontrado", cancel = "cancelado",
+}
+
 function startEggJob(e, card, button)
-    cancelJob()
+    cancelJob(false)
     local job = { card = card, button = button }
     currentJob = job
     button.Text = "PARAR"
-    local function alive() return currentJob == job end
-    local function finish(msg, ok)
-        if alive() then
-            currentJob = nil
-            if button.Parent then button.Text = "VOAR" end
-        end
+    local function alive() return currentJob == job and not job.cancelled end
+    local eggName = tostring(e.index or "Egg")
+
+    local function finish(msg, ok, land)
+        if job.release then pcall(job.release); job.release = nil end
+        if currentJob == job then currentJob = nil end
+        resetButton(job)
         if msg then setStatus(msg, ok and 60 or 220, ok and 200 or 60, ok and 100 or 60) end
+        if land then task.spawn(safeLand) end
     end
 
-    task.spawn(function()
+    local function run()
         local model = e.model
-        setStatus("Voando até o ovo...", 130, 130, 130)
-        if not eggTarget(model)() then
-            return finish("Esse ovo foi pego por alguém ou sumiu.", false)
+        local tgt = eggTarget(model)
+        if not tgt() then
+            notify("🥚 " .. eggName .. " sumiu ou foi pego por alguém.", Color3.fromRGB(220, 60, 60))
+            return finish("Ovo indisponível.", false, false)
         end
-        local reached = flyWait(eggTarget(model), { model })
-        if not alive() then return end
-        if not reached then return finish("Não chegou no ovo (veja F9).", false) end
 
-        -- Só voar
+        setStatus("Voando até o ovo...", 130, 130, 130)
+        local reached, why = flyWait(tgt, { model })
+        if not alive() then return end
+        if not reached then
+            if why == "lost" then
+                notify("🥚 " .. eggName .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.",
+                    Color3.fromRGB(220, 60, 60))
+            end
+            -- stopFly já chama safeLand quando para no ar
+            return finish("Não chegou no ovo: " .. (REASON_TEXT[why] or tostring(why)) .. ".", false, false)
+        end
+
+        -- Só voar: se não tiver chão, fica parado no ar até apertar SOLTAR
         if not (autoCollect and e.kind == "Mapa" and e.id ~= nil) then
-            return finish("Chegou no ovo.", true)
+            local _, hrp, hum = getChar()
+            if hrp and inAirWithoutGround(hrp, hum) then
+                job.release = holdPosition()
+                button.Text = "SOLTAR"
+                setStatus("Chegou no ovo (parado no ar). SOLTAR leva você pro chão.", 60, 200, 100)
+                return -- o job continua ativo até SOLTAR/PARAR (cancelJob → safeLand)
+            end
+            return finish("Chegou no ovo.", true, false)
         end
 
         -- Pegar: mesmas condições do prompt do jogo
         -- (HoldDuration 1.25s e MaxActivationDistance 10, JumpLTMController:1248)
-        if not grabRemote then return finish("Remote Grab não encontrada.", false) end
-        if LP:GetAttribute("CarryingJumpEgg") == true then
-            log("já está carregando um ovo, indo direto pro plot")
-        else
+        if not grabRemote then return finish("Remote Grab não encontrada.", false, true) end
+        if LP:GetAttribute("CarryingJumpEgg") ~= true then
             setStatus("Pegando o ovo...", 130, 130, 130)
+            job.release = holdPosition() -- não cai enquanto segura o prompt
             task.wait(1.3)
             if not alive() then return end
+            if not tgt() then
+                notify("🥚 " .. eggName .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.",
+                    Color3.fromRGB(220, 60, 60))
+                return finish("O ovo sumiu.", false, true)
+            end
             local _, hrp = getChar()
-            if not (hrp and model.Parent and (model:GetPivot().Position - hrp.Position).Magnitude <= 10) then
-                return finish("Longe demais do ovo pra pegar.", false)
+            if not (hrp and (model:GetPivot().Position - hrp.Position).Magnitude <= 10) then
+                return finish("Longe demais do ovo pra pegar.", false, true)
             end
             grabRemote:FireServer("JumpLTM/Eggs", e.id)
             log("Grab", e.id)
-            if not waitAttr("CarryingJumpEgg", true, 3) then
-                return finish("Não conseguiu pegar o ovo.", false)
-            end
+            local got = waitAttr("CarryingJumpEgg", true, 3)
+            if job.release then job.release(); job.release = nil end
+            if not alive() then return end
+            if not got then return finish("Não conseguiu pegar o ovo.", false, true) end
         end
-        if not alive() then return end
 
         -- Levar pro meu plot
-        if not plotTarget() then return finish("Plot não encontrado.", false) end
+        if not plotLanding() then return finish("Plot não encontrado.", false, true) end
         setStatus("Levando o ovo pro plot...", 130, 130, 130)
-        reached = flyWait(plotTarget, {})
+        reached, why = flyWait(plotLanding, {})
         if not alive() then return end
-        if not reached then return finish("Não chegou no plot.", false) end
+        if not reached then
+            return finish("Não chegou no plot: " .. (REASON_TEXT[why] or tostring(why)) .. ".", false, false)
+        end
 
         -- Colocar: mesma chamada do botão ButtonX do jogo (linha 1021)
         task.wait(0.3)
-        if not onOwnPlot() then return finish("Não está em cima do plot.", false) end
-        if not eggRemote then return finish("Remote RequestEggPlace não encontrada.", false) end
+        if not onOwnPlot() then return finish("Não está em cima do plot.", false, true) end
+        if not eggRemote then return finish("Remote RequestEggPlace não encontrada.", false, false) end
         eggRemote:FireServer()
         log("RequestEggPlace")
         if waitAttr("CarryingJumpEgg", false, 3) then
-            finish("✔ Ovo colocado no plot!", true)
+            notify("✔ " .. eggName .. " colocado no seu plot!", Color3.fromRGB(60, 200, 100), 5)
+            finish("✔ Ovo colocado no plot!", true, false)
         else
-            finish("Servidor não colocou o ovo (plot cheio?).", false)
+            finish("Servidor não colocou o ovo (plot cheio?).", false, false)
+        end
+    end
+
+    task.spawn(function()
+        local ok, err = pcall(run)
+        if not ok then
+            log("erro no job:", err)
+            notify("⚠ Erro no voo/coleta (veja F9). Levando você pro chão.", Color3.fromRGB(220, 60, 60))
+            if flying then stopFly("error") end
+            finish("Erro: " .. tostring(err), false, true)
         end
     end)
 end
@@ -1217,13 +1482,13 @@ local function makeCard(e)
     tp.Text = "VOAR"
     tp.Parent = card
     Instance.new("UICorner", tp).CornerRadius = UDim.new(0, 5)
-    tp.MouseButton1Click:Connect(function()
+    tp.MouseButton1Click:Connect(safe("botão voar", function()
         if currentJob and currentJob.card == card then
             cancelJob()
             return
         end
         startEggJob(e, card, tp)
-    end)
+    end))
 
     -- Informações à direita
     local info = Instance.new("TextLabel")
@@ -1340,7 +1605,7 @@ task.spawn(function()
 end)
 
 -- Gira as prévias 3D.
-table.insert(conns, RunService.RenderStepped:Connect(function(dt)
+table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt)
     if not toggles.hub then return end
     for _, ent in pairs(entries) do
         local ui = ent.ui
@@ -1351,6 +1616,6 @@ table.insert(conns, RunService.RenderStepped:Connect(function(dt)
             ui.cam.CFrame = CFrame.lookAt(ui.center + off, ui.center)
         end
     end
-end))
+end)))
 
 setStatus("Pronto. Veja o F9 se algo ficar cinza.")
