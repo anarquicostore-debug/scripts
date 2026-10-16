@@ -1837,86 +1837,430 @@ table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt
     end
 end)))
 
--- ═══ CHILLI LIBRARY ══════════════════════════════════════════════════════════
--- Painel principal na Chilli Library. Se ela não carregar por qualquer motivo,
--- o painel próprio do script (o antigo) continua funcionando como reserva.
--- Uso da API conforme o script de exemplo da própria lib:
---   bootstrap(key) → Chilli:CreateWindow → window:CreateTab → tab:CreateSection
---   → section:CreateToggle/CreateInput/CreateButton/CreateText → Chilli:Finalize
-local CHILLI_KEY = "CPC1:7qN4vK9mP2xR8sT5wY3aD6fH1jL0cB7eG4uZ9iM2"
-local CHILLI_URL = "https://raw.githubusercontent.com/tienkhanh1/spicy/refs/heads/main/Chilli%20Library"
-local CHILLI_FILES = { "chilli_library_v3nt.txt", "chilli_library_v3nt.lua" }
+-- ═══ V3NT UI (recriação local do visual da Chilli Library) ═══════════════════
+-- Mesmo visual da Chilli (janela, barra vermelha, abas laterais, linhas com
+-- switch verde, botões vermelhos, campos), feito aqui dentro do script:
+--   • nada é baixado da internet (sem HttpGet, sem engine ofuscado);
+--   • não mexe em nenhuma GUI do jogo (a Chilli original move/esconde o HUD
+--     "LeftCenter" do jogo e copia o botão da loja);
+--   • tudo fica na GUI protegida (gethui) com nome aleatório.
+-- A API é a mesma usada com a Chilli: CreateWindow/CreateTab/CreateSection/
+-- CreateToggle/CreateInput/CreateButton/CreateText/Finalize.
+local V3ntUI = {}
+do
+    local normalFont = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.ExtraBold, Enum.FontStyle.Normal)
+    local SHINY = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(0.486, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(0.519, Color3.fromRGB(221, 221, 221)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(236, 236, 236)),
+    })
+    local BLUE_STROKE = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 36, 84)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 31, 54)),
+    })
+    local RED_OUTER = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 193, 194)),
+        ColorSequenceKeypoint.new(0.057, Color3.fromRGB(255, 132, 123)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(239, 28, 28)),
+    })
+    local RED_INNER = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 193, 194)),
+        ColorSequenceKeypoint.new(0.0156, Color3.fromRGB(255, 132, 123)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(239, 28, 28)),
+    })
+    local ACCENT = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(58, 255, 55)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 109, 0)),
+    })
+    local ROW_ASPECT, ROW_ASPECT_NOTE, ROW_WIDTH = 10, 7.5, 0.97
+
+    local function new(class, props, parent)
+        local o = Instance.new(class)
+        for k, v in pairs(props or {}) do pcall(function() o[k] = v end) end
+        if parent then o.Parent = parent end
+        return o
+    end
+    local function stroke(parent, mode, thickness, color)
+        local s = new("UIStroke", {
+            ApplyStrokeMode = mode, Color = color or Color3.new(0, 0, 0),
+            LineJoinMode = Enum.LineJoinMode.Round, Thickness = thickness,
+        }, parent)
+        pcall(function() s.StrokeSizingMode = Enum.StrokeSizingMode.ScaledSize end)
+        return s
+    end
+    local function gradient(parent, color, name)
+        return new("UIGradient", { Name = name or "UIGradient", Color = color, Rotation = 90 }, parent)
+    end
+    local function shiny(label)
+        label.FontFace = normalFont
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextScaled = true
+        local s = stroke(label, Enum.ApplyStrokeMode.Contextual, 0.065, Color3.new(1, 1, 1))
+        gradient(s, BLUE_STROKE)
+        gradient(label, SHINY)
+    end
+    local function plain(label)
+        label.FontFace = normalFont
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextScaled = true
+        stroke(label, Enum.ApplyStrokeMode.Contextual, 0.08)
+    end
+    local function scaleFeedback(button)
+        local sc = new("UIScale", { Scale = 1 }, button)
+        local hovered = false
+        local function play(v, d)
+            TweenService:Create(sc, TweenInfo.new(d, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = v }):Play()
+        end
+        button.MouseEnter:Connect(function() hovered = true play(1.035, 0.1) end)
+        button.MouseLeave:Connect(function() hovered = false play(1, 0.1) end)
+        button.MouseButton1Down:Connect(function() play(0.96, 0.055) end)
+        button.MouseButton1Up:Connect(function() play(hovered and 1.035 or 1, 0.08) end)
+    end
+    -- botão vermelho no estilo "Rebirth" do jogo
+    local function redButton(parent, text, props)
+        local button = new("TextButton", {
+            Name = text, AutoButtonColor = false, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Text = "", ZIndex = 6, AnchorPoint = Vector2.new(0.5, 0.5),
+        }, parent)
+        for k, v in pairs(props or {}) do button[k] = v end
+        scaleFeedback(button)
+        local base = new("Frame", {
+            Name = "Main", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(175, 0, 0),
+            BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 0.92),
+        }, button)
+        stroke(base, Enum.ApplyStrokeMode.Border, 0.06)
+        local color = new("Frame", {
+            Name = "ColorFrame", AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 0.9),
+        }, base)
+        local outer = gradient(color, RED_OUTER, "RedGradient")
+        local hl = new("Frame", {
+            Name = "Transparent", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.965, 0.88), ZIndex = 2,
+        }, color)
+        local inner = gradient(hl, RED_INNER, "RedGradient")
+        local label = new("TextLabel", {
+            Name = "Label", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+            Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.9, 0.62), Text = text, ZIndex = 7,
+        }, color)
+        shiny(label)
+        return button, label, function(green)
+            outer.Color = green and ACCENT or RED_OUTER
+            inner.Color = green and ACCENT or RED_INNER
+        end
+    end
+
+    function V3ntUI.new(parentGui)
+        local lib = { _windows = {} }
+
+        function lib:CreateWindow(cfg)
+            cfg = cfg or {}
+            local gui = parentGui
+            -- janela (mesmas medidas da Chilli: obj2..obj25)
+            local main = new("Frame", {
+                Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(0, 0, 0),
+                BackgroundTransparency = 0.4, BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0.475),
+                Size = UDim2.fromScale(0.45, 0.55), Active = true,
+            }, gui)
+            stroke(main, Enum.ApplyStrokeMode.Border, 0.008)
+            new("UIAspectRatioConstraint", { AspectRatio = 1.34, AspectType = Enum.AspectType.FitWithinMaxSize,
+                DominantAxis = Enum.DominantAxis.Width }, main)
+
+            local top = new("Frame", {
+                Name = "Top", AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(111, 0, 2),
+                BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 0.135), Active = true,
+            }, main)
+            stroke(top, Enum.ApplyStrokeMode.Border, 0.06, Color3.fromRGB(58, 0, 0))
+            local topColor = new("Frame", {
+                Name = "Color", AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 0.88),
+            }, top)
+            new("UIGradient", { Rotation = 90, Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(253, 86, 89)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 11, 15)) }) }, topColor)
+            new("Frame", { Name = "Transparent", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(0, 0, 0),
+                BackgroundTransparency = 0.9, BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromScale(0.988, 0.87) }, topColor)
+            local title = new("TextLabel", {
+                Name = "Label", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+                Position = UDim2.fromScale(0.5688, 0.5), Size = UDim2.fromScale(0.862, 0.75), ZIndex = 6,
+                Text = tostring(cfg.Name or "V3nt"), TextColor3 = Color3.new(1, 1, 1), TextScaled = true,
+                TextXAlignment = Enum.TextXAlignment.Left, Font = Enum.Font.FredokaOne,
+            }, topColor)
+            stroke(title, Enum.ApplyStrokeMode.Contextual, 0.08)
+            -- ícone "V" no lugar da aranha
+            local icon = new("TextLabel", {
+                Name = "Icon", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+                Position = UDim2.fromScale(0.067, 0.45), Size = UDim2.fromScale(0.1166, 1.18), ZIndex = 7,
+                Text = "V", TextScaled = true, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.FredokaOne,
+            }, top)
+            new("UIAspectRatioConstraint", { AspectRatio = 1 }, icon)
+            stroke(icon, Enum.ApplyStrokeMode.Contextual, 0.1)
+            local close = redButton(top, "X", {
+                Name = "Close", Position = UDim2.fromScale(0.955, 0.434), Size = UDim2.fromScale(0.0664, 0.659), ZIndex = 99,
+            })
+            new("UIAspectRatioConstraint", { AspectRatio = 1 }, close)
+
+            local list = new("ScrollingFrame", {
+                Name = "List", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, BorderSizePixel = 0,
+                Position = UDim2.fromScale(0.5, 0.5702), Size = UDim2.fromScale(0.99, 0.8296), ZIndex = 5,
+                ScrollBarThickness = 6, ScrollBarImageColor3 = Color3.new(1, 1, 1),
+                CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollingDirection = Enum.ScrollingDirection.Y, Active = true,
+            }, main)
+
+            -- abas na lateral esquerda (como os SideButtons da Chilli)
+            local side = new("Frame", {
+                Name = "SideButtons", AnchorPoint = Vector2.new(1, 0.5), BackgroundTransparency = 1,
+                Position = UDim2.new(-0.025, 0, 0.558, 0), Size = UDim2.fromScale(0.2612, 1),
+            }, main)
+            new("UIListLayout", { Padding = UDim.new(0.015, 0), SortOrder = Enum.SortOrder.LayoutOrder,
+                HorizontalAlignment = Enum.HorizontalAlignment.Center }, side)
+
+            -- linhas com altura proporcional à largura da lista
+            local rows = {}
+            local function fitRows()
+                local w = list.AbsoluteSize.X
+                for row, aspect in pairs(rows) do
+                    if row.Parent then
+                        row.Size = UDim2.new(ROW_WIDTH, 0, 0, math.floor(w * ROW_WIDTH / aspect))
+                    else
+                        rows[row] = nil
+                    end
+                end
+            end
+            list:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitRows)
+
+            -- arrastar pela barra de cima
+            do
+                local dragging, startPos, startInput
+                top.InputBegan:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        dragging, startPos, startInput = true, main.Position, input.Position
+                        input.Changed:Connect(function()
+                            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                        end)
+                    end
+                end)
+                game:GetService("UserInputService").InputChanged:Connect(function(input)
+                    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                        local d = input.Position - startInput
+                        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+                    end
+                end)
+            end
+
+            -- botão "V" pra reabrir (arrastável, no canto esquerdo)
+            local launcher = redButton(gui, "V", {
+                Name = "Launcher", Position = UDim2.new(0, 46, 0.5, 0), Size = UDim2.fromOffset(56, 56), Visible = false,
+            })
+            local window = { Name = cfg.Name, Tabs = {}, _main = main, _destroyed = false }
+            close.MouseButton1Click:Connect(function()
+                main.Visible = false
+                launcher.Visible = true
+            end)
+            launcher.MouseButton1Click:Connect(function()
+                main.Visible = true
+                launcher.Visible = false
+            end)
+
+            local function selectTab(tab)
+                for _, t in ipairs(window.Tabs) do
+                    t._content.Visible = t == tab
+                    t._paint(t == tab)
+                end
+                window.SelectedTab = tab
+                list.CanvasPosition = Vector2.zero
+                fitRows()
+            end
+
+            function window:CreateTab(tcfg)
+                tcfg = type(tcfg) == "table" and tcfg or { Name = tostring(tcfg) }
+                local tab = { Name = tcfg.Name, Sections = {} }
+                local btn, _, paint = redButton(side, tostring(tcfg.Name), {
+                    Size = UDim2.fromScale(1, 0.13), LayoutOrder = #window.Tabs + 1,
+                })
+                tab._paint = paint
+                tab._content = new("Frame", {
+                    Name = tostring(tcfg.Name), BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y, Visible = false,
+                }, list)
+                new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center }, tab._content)
+                new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 10) }, tab._content)
+                btn.MouseButton1Click:Connect(function() selectTab(tab) end)
+                table.insert(window.Tabs, tab)
+                if #window.Tabs == 1 then selectTab(tab) end
+
+                local order = 0
+                local function nextOrder() order = order + 1 return order end
+
+                -- linha base (fundo preto translúcido + título, com nota opcional)
+                local function rowPlate(name, note)
+                    local aspect = note and ROW_ASPECT_NOTE or ROW_ASPECT
+                    local row = new("Frame", { Name = name, BackgroundTransparency = 1, LayoutOrder = nextOrder(),
+                        Size = UDim2.new(ROW_WIDTH, 0, 0, 40) }, tab._content)
+                    rows[row] = aspect
+                    local plate = new("Frame", { Name = "Main", AnchorPoint = Vector2.new(0.5, 0.5),
+                        BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5, BorderSizePixel = 0,
+                        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 0.85), ZIndex = 3 }, row)
+                    stroke(plate, Enum.ApplyStrokeMode.Border, 0.05)
+                    local label = new("TextLabel", { Name = "Label", AnchorPoint = Vector2.new(0, 0.5),
+                        BackgroundTransparency = 1, Position = UDim2.fromScale(0.025, note and 0.36 or 0.5),
+                        Size = UDim2.fromScale(0.65, note and 0.42 or 0.64), Text = name, TextWrapped = true,
+                        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5 }, plate)
+                    plain(label)
+                    if note then
+                        local n = new("TextLabel", { Name = "Note", AnchorPoint = Vector2.new(0, 0.5),
+                            BackgroundTransparency = 1, Position = UDim2.fromScale(0.025, 0.76),
+                            Size = UDim2.fromScale(0.65, 0.3), Text = note, TextWrapped = true,
+                            TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5,
+                            TextColor3 = Color3.fromRGB(200, 200, 200) }, plate)
+                        n.FontFace = normalFont
+                        n.TextScaled = true
+                        n.TextColor3 = Color3.fromRGB(200, 200, 200)
+                    end
+                    task.defer(fitRows)
+                    return row, plate, label
+                end
+
+                function tab:CreateSection(scfg)
+                    scfg = type(scfg) == "table" and scfg or { Name = tostring(scfg) }
+                    local header = new("TextLabel", { Name = tostring(scfg.Name), BackgroundTransparency = 1,
+                        LayoutOrder = nextOrder(), Size = UDim2.new(ROW_WIDTH, 0, 0, 30), Text = tostring(scfg.Name),
+                        ZIndex = 4 }, tab._content)
+                    shiny(header)
+                    local section = { Name = scfg.Name }
+
+                    function section:CreateToggle(c)
+                        local _, plate, label = rowPlate(tostring(c.Name), c.Note)
+                        label.Size = UDim2.new(0.72, 0, label.Size.Y.Scale, 0)
+                        local switch = new("Frame", { Name = "Switch", AnchorPoint = Vector2.new(0.5, 0.5),
+                            BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+                            Position = UDim2.fromScale(0.915, 0.5), Size = UDim2.fromScale(0.142, c.Note and 0.55 or 0.75),
+                            ZIndex = 3 }, plate)
+                        stroke(switch, Enum.ApplyStrokeMode.Border, 0.06)
+                        local off = new("UIGradient", { Name = "OFF", Rotation = 90, Color = ColorSequence.new(Color3.new(0, 0, 0)),
+                            Transparency = NumberSequence.new(0.6) }, switch)
+                        local on = gradient(switch, ACCENT, "ON")
+                        local knob = new("Frame", { Name = "Hold", AnchorPoint = Vector2.new(0.5, 0.5),
+                            BackgroundColor3 = Color3.fromRGB(89, 89, 89), BorderSizePixel = 0,
+                            Size = UDim2.fromScale(0.72, 0.72), ZIndex = 5 }, switch)
+                        stroke(knob, Enum.ApplyStrokeMode.Border, 0.09)
+                        new("UIAspectRatioConstraint", { AspectRatio = 1 }, knob)
+                        new("Frame", { Name = "Color", AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1),
+                            BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 0), Size = UDim2.fromScale(1, 0.9), ZIndex = 6 }, knob)
+                        local hit = new("TextButton", { Name = "Button", AnchorPoint = Vector2.new(0.5, 0.5),
+                            BackgroundTransparency = 1, Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1),
+                            Text = "", ZIndex = 99, AutoButtonColor = false }, switch)
+                        local value = c.Default == true
+                        local function set(v, fire, animate)
+                            value = v == true
+                            off.Enabled, on.Enabled = not value, value
+                            local target = UDim2.fromScale(value and 0.72 or 0.28, 0.5)
+                            if animate then
+                                TweenService:Create(knob, TweenInfo.new(0.12, Enum.EasingStyle.Quad), { Position = target }):Play()
+                            else
+                                knob.Position = target
+                            end
+                            if fire ~= false and c.Callback then
+                                task.spawn(function()
+                                    local ok, err = pcall(c.Callback, value)
+                                    if not ok then warn("[V3ntUI] " .. tostring(err)) end
+                                end)
+                            end
+                        end
+                        hit.MouseButton1Click:Connect(function() set(not value, true, true) end)
+                        set(value, false, false)
+                        return {
+                            GetValue = function() return value end,
+                            SetValue = function(_, v, fire) set(v, fire, true) end,
+                        }
+                    end
+
+                    function section:CreateButton(c)
+                        local _, plate = rowPlate(tostring(c.Name), c.Note)
+                        local b = redButton(plate, tostring(c.ButtonText or c.Name), {
+                            Position = UDim2.fromScale(0.8847, 0.5), Size = UDim2.fromScale(0.2006, 0.68),
+                        })
+                        b.MouseButton1Click:Connect(function()
+                            if c.Callback then
+                                task.spawn(function()
+                                    local ok, err = pcall(c.Callback)
+                                    if not ok then warn("[V3ntUI] " .. tostring(err)) end
+                                end)
+                            end
+                        end)
+                        return {}
+                    end
+
+                    function section:CreateInput(c)
+                        local _, plate = rowPlate(tostring(c.Name), c.Note)
+                        local field = new("Frame", { Name = "Field", AnchorPoint = Vector2.new(0.5, 0.5),
+                            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.6, BorderSizePixel = 0,
+                            Position = UDim2.fromScale(0.845, 0.5), Size = UDim2.fromScale(0.28, c.Note and 0.5 or 0.62),
+                            ZIndex = 4 }, plate)
+                        stroke(field, Enum.ApplyStrokeMode.Border, 0.1)
+                        local underline = new("Frame", { AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = Color3.new(1, 1, 1),
+                            BorderSizePixel = 0, Position = UDim2.fromScale(0.5, 1), Size = UDim2.fromScale(0, 0.11), ZIndex = 6 }, field)
+                        local box = new("TextBox", { Name = "Input", AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1,
+                            ClearTextOnFocus = false, Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.9, 0.56),
+                            Text = tostring(c.Default or ""), PlaceholderText = tostring(c.Placeholder or ""),
+                            PlaceholderColor3 = Color3.fromRGB(198, 198, 198), ZIndex = 5 }, field)
+                        plain(box)
+                        box.Focused:Connect(function()
+                            TweenService:Create(underline, TweenInfo.new(0.2), { Size = UDim2.fromScale(1, 0.11) }):Play()
+                        end)
+                        box.FocusLost:Connect(function()
+                            TweenService:Create(underline, TweenInfo.new(0.2), { Size = UDim2.fromScale(0, 0.11) }):Play()
+                            local text = (box.Text:match("^%s*(.-)%s*$") or "")
+                            if c.MaxLength then text = text:sub(1, c.MaxLength) end
+                            box.Text = text
+                            if c.Callback then
+                                task.spawn(function()
+                                    local ok, err = pcall(c.Callback, text)
+                                    if not ok then warn("[V3ntUI] " .. tostring(err)) end
+                                end)
+                            end
+                        end)
+                        return { SetText = function(_, t) box.Text = tostring(t) end }
+                    end
+
+                    function section:CreateText(c)
+                        local _, _, label = rowPlate(tostring(c.Text or c.Name), nil)
+                        label.Size = UDim2.fromScale(0.94, 0.64)
+                        return {
+                            SetText = function(_, t) label.Text = tostring(t) end,
+                            Set = function(_, t) label.Text = tostring(t) end,
+                        }
+                    end
+
+                    table.insert(tab.Sections, section)
+                    return section
+                end
+
+                return tab
+            end
+
+            function window:GetDefaultTab() return window.Tabs[1] end
+            function window:Destroy()
+                window._destroyed = true
+                pcall(function() main:Destroy() end)
+                pcall(function() launcher:Destroy() end)
+            end
+
+            table.insert(lib._windows, window)
+            return window
+        end
+
+        function lib:Finalize() end
+        return lib
+    end
+end
+
 local HUB_NAME = "V3nt - Jump For Egg"
-
 local function stripRich(t) return (tostring(t):gsub("<[^>]->", "")) end
-
--- Troca a aranha 3D do botão lateral por um "V" (vale pra versão oficial da lib).
-local function patchLauncher()
-    local roots = {}
-    pcall(function() table.insert(roots, gethui()) end)
-    pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
-    for _, root in ipairs(roots) do
-        local launcher = root:FindFirstChild("ChilliLeftCenter")
-        local vp = launcher and launcher:FindFirstChild("ChilliViewport", true)
-        if vp then
-            for _, d in ipairs(vp:GetDescendants()) do
-                if d:IsA("BasePart") then d.Transparency = 1 end
-            end
-            if not vp:FindFirstChild("V3ntIcon") then
-                local v = Instance.new("TextLabel")
-                v.Name = "V3ntIcon"
-                v.AnchorPoint = Vector2.new(0.5, 0.5)
-                v.Position = UDim2.fromScale(0.5, 0.5)
-                v.Size = UDim2.fromScale(0.9, 0.9)
-                v.BackgroundTransparency = 1
-                v.Text = "V"
-                v.TextScaled = true
-                v.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy)
-                v.TextColor3 = Color3.new(1, 1, 1)
-                v.ZIndex = vp.ZIndex + 1
-                v.Parent = vp
-                local st = Instance.new("UIStroke")
-                st.Color, st.Thickness = Color3.new(0, 0, 0), 2
-                st.Parent = v
-            end
-            local btn = vp.Parent
-            local txt = btn and btn:FindFirstChild("Txt")
-            if txt and txt:IsA("TextLabel") then txt.Text = "V3nt" end
-            return true
-        end
-    end
-    return false
-end
-
-local function loadChilli()
-    -- 1º: cópia local com o "V" (pasta workspace do executor); 2º: versão oficial
-    local sources = {}
-    for _, name in ipairs(CHILLI_FILES) do
-        local ok, content = pcall(function()
-            if isfile and isfile(name) then return readfile(name) end
-        end)
-        if ok and type(content) == "string" and #content > 1000 then
-            table.insert(sources, { name = name, src = content })
-        end
-    end
-    table.insert(sources, { name = "oficial (GitHub)", get = function() return game:HttpGet(CHILLI_URL) end })
-
-    for _, s in ipairs(sources) do
-        local ok, lib = pcall(function()
-            local src = s.src or s.get()
-            if src:sub(1, 3) == "\239\187\191" then src = src:sub(4) end
-            local chunk, err = loadstring(src)
-            assert(chunk, err)
-            local bootstrap = chunk()
-            assert(type(bootstrap) == "function", "bootstrap inválido")
-            local Chilli = bootstrap(CHILLI_KEY)
-            assert(type(Chilli) == "table" and type(Chilli.CreateWindow) == "function", "API inválida")
-            return Chilli
-        end)
-        log("Chilli (" .. s.name .. "):", ok and "ok" or tostring(lib))
-        if ok then return lib end
-    end
-end
 
 -- tenta os setters que a lib pode ter (o exemplo também não sabia qual existe)
 local function setOptionText(opt, text)
@@ -1930,12 +2274,7 @@ local function setOptionText(opt, text)
 end
 
 local function buildChilliUI()
-    local Chilli = loadChilli()
-    if not Chilli then return false end
-
-    pcall(function()
-        Chilli.ManualQuickDefaults = { PinnedFeatures = {}, Keybinds = {}, PinGroups = {}, LeftCenterHidden = false }
-    end)
+    local Chilli = V3ntUI.new(newProtectedGui("V3ntJumpForEggWindow"))
 
     local function section(tab, name)
         for _, ex in ipairs(tab.Sections or {}) do
@@ -2046,26 +2385,17 @@ local function buildChilliUI()
         setOptionText(farmText, stripRich(txt))
     end
 
-    Chilli:Finalize({ Window = window, MainTab = window:GetDefaultTab(), ShowMainTab = false })
-
-    -- "V" no lugar da aranha (tenta algumas vezes, a lib monta o botão depois)
-    task.spawn(function()
-        for _ = 1, 20 do
-            local ok, done = pcall(patchLauncher)
-            if ok and done then break end
-            task.wait(0.5)
-        end
-    end)
+    Chilli:Finalize({ Window = window })
     return true
 end
 
 local okUI, uiResult = pcall(buildChilliUI)
 if okUI and uiResult then
     frame.Visible = false -- painel antigo fica só como reserva
-    log("Painel: Chilli Library")
+    log("Painel: V3nt UI (visual da Chilli, local)")
 else
-    log("Chilli indisponível, usando o painel próprio:", tostring(uiResult))
-    notify("Chilli Library não carregou. Usando o painel reserva.", Color3.fromRGB(220, 160, 60), 6)
+    log("V3nt UI falhou, usando o painel reserva:", tostring(uiResult))
+    notify("Painel principal falhou (veja F9). Usando o painel reserva.", Color3.fromRGB(220, 160, 60), 6)
 end
 
 setStatus("Pronto. Veja o F9 se algo ficar cinza.")
