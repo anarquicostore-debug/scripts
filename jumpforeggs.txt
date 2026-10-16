@@ -80,14 +80,16 @@ local START_INDEX = {
     setupClientJumpPads    = 21,
 }
 local inner = {}
+local JLC -- tabela do JumpLTMController (também guarda RenderedEggs)
 do
-    local ok, JLC = pcall(function()
+    local ok, mod = pcall(function()
         local f = ReplicatedStorage:FindFirstChild("Controllers")
         local m = f and f:FindFirstChild("JumpLTMController")
         return m and require(m)
     end)
-    local ups = ok and type(JLC) == "table" and upvalues(JLC.Start)
-    log("JumpLTMController:", ups and "ok" or ("falhou " .. tostring(JLC)))
+    if ok and type(mod) == "table" then JLC = mod end
+    local ups = JLC and upvalues(JLC.Start)
+    log("JumpLTMController:", ups and "ok" or ("falhou " .. tostring(mod)))
     if ups then
         for _, v in pairs(ups) do
             local n = type(v) == "function" and fnName(v)
@@ -183,8 +185,8 @@ sg.Name, sg.ResetOnSpawn, sg.ZIndexBehavior = "JumpForEggsGUI", false, Enum.ZInd
 sg.Parent = root
 
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 300, 0, 300)
-frame.Position         = UDim2.new(0.5, -150, 0.5, -150)
+frame.Size             = UDim2.new(0, 300, 0, 380)
+frame.Position         = UDim2.new(0, 20, 0.5, -190)
 frame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
 frame.BorderSizePixel  = 0
 frame.Active, frame.Draggable = true, true
@@ -232,7 +234,7 @@ local function setStatus(msg, r, g, b)
 end
 
 local toggles = {}
-local function makeToggle(key, label, y, enabled)
+local function makeToggle(key, label, y, enabled, onChange)
     local btn = Instance.new("TextButton")
     btn.Size, btn.Position = UDim2.new(1, -24, 0, 34), UDim2.new(0, 12, 0, y)
     btn.BorderSizePixel, btn.AutoButtonColor = 0, false
@@ -257,6 +259,7 @@ local function makeToggle(key, label, y, enabled)
         if not enabled then return end
         toggles[key] = not toggles[key]
         paint()
+        if onChange then onChange(toggles[key]) end
     end)
     paint()
 end
@@ -266,6 +269,10 @@ makeToggle("tp",       "Teleportar pro trampolim", 92, launchRemote ~= nil)
 makeToggle("egg",      "Auto colocar ovo",       132, eggRemote ~= nil)
 makeToggle("brainrot", "Auto colocar brainrot",  172, brainRemote ~= nil)
 makeToggle("upgrade",  "Auto upgrade trampolim", 212, upgradeRemote ~= nil)
+-- ESP e Hub são criados mais abaixo; os toggles só ligam/desligam.
+local onEspToggle, onHubToggle
+makeToggle("esp",      "ESP Eggs",               252, true, function(v) if onEspToggle then onEspToggle(v) end end)
+makeToggle("hub",      "Hub de Eggs",            292, true, function(v) if onHubToggle then onHubToggle(v) end end)
 
 -- ─── LOOPS ────────────────────────────────────────────────────────────────────
 local alive = true
@@ -355,5 +362,578 @@ task.spawn(function()
         end
     end
 end)
+
+-- ═══ EGGS: ESP + HUB ═════════════════════════════════════════════════════════
+-- Só leitura (nada é enviado ao servidor). Fontes no dump:
+--   Ovos no plot : tag "BasePlotEggVisual", atributos BrainrotIndex, Mutation,
+--                  Traits ("a|b"), HatchAt, EggPlacedAt   (JumpLTMController:359)
+--   Ovos no mapa : JumpLTMController.RenderedEggs[id].model (linha 1241) e os
+--                  dados do pool "JumpLTM/Eggs": brainrot, mutation, traits,
+--                  timer, despawnTimer, grabbed           (WorldBrainrotController:58)
+--   Nomes/cores  : Datas.Animals, Datas.Rarities, Datas.Traits, Datas.Mutations
+
+local function tryRequire(...)
+    local inst = ReplicatedStorage
+    for _, n in ipairs({ ... }) do
+        inst = inst and inst:FindFirstChild(n)
+    end
+    if not (inst and inst:IsA("ModuleScript")) then return nil end
+    local ok, m = pcall(require, inst)
+    return ok and type(m) == "table" and m or nil
+end
+
+local AnimalsData   = tryRequire("Datas", "Animals") or {}
+local RaritiesData  = tryRequire("Datas", "Rarities") or {}
+local TraitsData    = tryRequire("Datas", "Traits") or {}
+local MutationsData = tryRequire("Datas", "Mutations") or {}
+
+local eggPool
+do
+    local Rep = tryRequire("Packages", "ReplicatorClient")
+    if Rep and type(Rep.get) == "function" then
+        local ok, pool = pcall(Rep.get, "JumpLTM/Eggs")
+        if ok then eggPool = pool end
+    end
+    log("Pool JumpLTM/Eggs:", eggPool and "ok" or "indisponível (usa o overhead)")
+end
+
+-- Ícone do trait -> nome (pra ler os traits pelo overhead quando não há dados).
+local traitByIcon = {}
+for name, t in pairs(TraitsData) do
+    if type(t) == "table" and t.Icon then traitByIcon[tostring(t.Icon)] = name end
+end
+
+-- ─── Emojis ──────────────────────────────────────────────────────────────────
+local MUTATION_EMOJI = {
+    { "gold", "🟡" }, { "diamond", "💎" }, { "rainbow", "🌈" }, { "lava", "🌋" },
+    { "blood", "🩸" }, { "candy", "🍬" }, { "galaxy", "🌌" }, { "yin", "☯️" },
+    { "radioactive", "☢️" }, { "celestial", "🌠" }, { "cursed", "💀" }, { "divine", "👼" },
+    { "cyber", "🤖" }, { "crystal", "🔮" }, { "fire", "🔥" }, { "ice", "🧊" },
+    { "snow", "❄️" }, { "shadow", "🌑" }, { "glitch", "👾" }, { "neon", "💡" },
+    { "zombie", "🧟" }, { "pumpkin", "🎃" }, { "halloween", "🎃" }, { "christmas", "🎄" },
+    { "easter", "🐣" }, { "honey", "🍯" }, { "bee", "🐝" }, { "solar", "☀️" },
+    { "eclipse", "🌘" }, { "moon", "🌙" }, { "molten", "🌋" }, { "toxic", "☣️" },
+    { "phantom", "👻" }, { "ghost", "👻" }, { "silver", "⚪" }, { "bronze", "🟤" },
+    { "emerald", "💚" }, { "ruby", "❤️" }, { "sapphire", "💙" }, { "pearl", "🦪" },
+    { "chocolate", "🍫" }, { "strawberry", "🍓" }, { "lucky", "🍀" }, { "storm", "⛈️" },
+}
+local TRAIT_EMOJI = {
+    { "taco", "🌮" }, { "nyan", "🐱" }, { "glitch", "👾" }, { "rain", "🌧️" },
+    { "snow", "❄️" }, { "star", "🌠" }, { "galac", "🌌" }, { "explo", "💥" },
+    { "bubble", "🫧" }, { "zombie", "🧟" }, { "crab", "🦀" }, { "fire", "🔥" },
+    { "witch", "🧙" }, { "bomb", "💣" }, { "concert", "🎤" }, { "music", "🎵" },
+    { "shark", "🦈" }, { "hat", "🎩" }, { "brazil", "🇧🇷" }, { "sleep", "😴" },
+    { "ufo", "🛸" }, { "lightning", "⚡" }, { "spider", "🕷️" }, { "strawberry", "🍓" },
+    { "paint", "🎨" }, { "skele", "💀" }, { "meowl", "🦉" }, { "owl", "🦉" },
+    { "indonesia", "🇮🇩" }, { "mexico", "🇲🇽" }, { "japan", "🇯🇵" }, { "lucky", "🍀" },
+    { "soccer", "⚽" }, { "money", "💰" }, { "10b", "💰" }, { "crown", "👑" },
+    { "egg", "🥚" }, { "bee", "🐝" }, { "honey", "🍯" }, { "candy", "🍬" },
+    { "pumpkin", "🎃" }, { "ghost", "👻" }, { "christmas", "🎄" }, { "gift", "🎁" },
+    { "sun", "☀️" }, { "moon", "🌙" }, { "eclipse", "🌘" }, { "fish", "🐟" },
+    { "radio", "☢️" }, { "crystal", "🔮" }, { "heart", "❤️" }, { "angel", "👼" },
+}
+local function emojiFor(list, name, fallback)
+    if type(name) ~= "string" then return fallback end
+    local low = name:lower()
+    for _, pair in ipairs(list) do
+        if low:find(pair[1], 1, true) then return pair[2] end
+    end
+    return fallback
+end
+
+-- ─── Helpers de texto ────────────────────────────────────────────────────────
+local function esc(v)
+    return (tostring(v):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+local function hex(c)
+    if typeof(c) ~= "Color3" then return "FFFFFF" end
+    return string.format("%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+local function fmtTime(sec)
+    if type(sec) ~= "number" then return nil end
+    if sec <= 0 then return "READY!" end
+    sec = math.ceil(sec)
+    if sec >= 3600 then return string.format("%dh%02dm", sec // 3600, (sec % 3600) // 60) end
+    return string.format("%d:%02d", sec // 60, sec % 60)
+end
+local function fmtVal(v)
+    local t = typeof(v)
+    if t == "number" then
+        if math.abs(v) >= 1e6 then return string.format("%.3g", v) end
+        return tostring(math.floor(v * 100 + 0.5) / 100)
+    elseif t == "Color3" then return "#" .. hex(v)
+    elseif t == "Vector3" then return string.format("%.0f, %.0f, %.0f", v.X, v.Y, v.Z)
+    elseif t == "CFrame" then return string.format("%.0f, %.0f, %.0f", v.X, v.Y, v.Z)
+    elseif t == "table" then
+        local parts = {}
+        for k, x in pairs(v) do
+            local tx = typeof(x)
+            if tx ~= "table" and tx ~= "function" and tx ~= "Instance" then
+                table.insert(parts, (type(k) == "number" and "" or tostring(k) .. "=") .. tostring(x))
+            end
+            if #parts >= 6 then break end
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    end
+    return tostring(v)
+end
+
+-- ─── Coleta de ovos ──────────────────────────────────────────────────────────
+local function plotOwner(inst)
+    while inst and inst ~= workspace do
+        if inst:IsA("Model") then
+            local uid = inst:GetAttribute("OwnerUserId")
+            if type(uid) == "number" then return uid end
+        end
+        inst = inst.Parent
+    end
+end
+
+local function splitTraits(v)
+    if type(v) == "table" then return v end
+    if type(v) == "string" and v ~= "" then return string.split(v, "|") end
+    return {}
+end
+
+-- Lê o overhead do jogo que fica dentro do model (fallback dos ovos do mapa).
+local function readOverhead(model)
+    local out = {}
+    for _, g in ipairs(model:GetDescendants()) do
+        if g:IsA("BillboardGui") or (g:IsA("GuiObject") and g:FindFirstChild("DisplayName")) then
+            local root = g
+            local dn = root:FindFirstChild("DisplayName", true)
+            if dn and dn:IsA("TextLabel") then
+                out.displayName = dn.Text
+                local m = root:FindFirstChild("Mutation", true)
+                if m and m:IsA("TextLabel") and m.Visible then out.mutation = m.Text end
+                local r = root:FindFirstChild("Rarity", true)
+                if r and r:IsA("TextLabel") then out.rarity = r.Text end
+                local gen = root:FindFirstChild("Generation", true)
+                if gen and gen:IsA("TextLabel") and gen.Visible then out.generation = gen.Text end
+                local st = root:FindFirstChild("Stolen", true)
+                if st and st:IsA("TextLabel") and st.Visible then out.stolen = st.Text end
+                local tr = root:FindFirstChild("Traits", true)
+                if tr then
+                    out.traits = {}
+                    for _, img in ipairs(tr:GetChildren()) do
+                        if img:IsA("ImageLabel") and img.Visible and img.Name ~= "Template" then
+                            table.insert(out.traits, traitByIcon[img.Image] or img.Image)
+                        end
+                    end
+                end
+                return out
+            end
+        end
+    end
+    return out
+end
+
+local function collectEggs()
+    local list = {}
+    -- Ovos colocados nos plots
+    for _, m in ipairs(CollectionService:GetTagged("BasePlotEggVisual")) do
+        if m:IsA("Model") and m:IsDescendantOf(workspace) then
+            local attrs = m:GetAttributes()
+            local uid = plotOwner(m)
+            local owner = uid and Players:GetPlayerByUserId(uid)
+            table.insert(list, {
+                key = m, kind = "Plot", model = m,
+                index = attrs.BrainrotIndex, mutation = attrs.Mutation,
+                traits = splitTraits(attrs.Traits),
+                hatchAt = attrs.HatchAt,
+                owner = owner and owner.Name or (uid and ("UserId " .. uid)) or "?",
+                attrs = attrs,
+            })
+        end
+    end
+    -- Ovos soltos no mapa (pool JumpLTM/Eggs)
+    local rendered = JLC and type(JLC.RenderedEggs) == "table" and JLC.RenderedEggs or {}
+    for id, rec in pairs(rendered) do
+        local m = type(rec) == "table" and rec.model
+        if typeof(m) == "Instance" and m:IsDescendantOf(workspace) then
+            local data
+            if eggPool then
+                local ok, d = pcall(function() return eggPool:TryIndex({ "brainrots", id }) end)
+                if ok and type(d) == "table" then data = d end
+            end
+            local oh = data and {} or readOverhead(m)
+            local prompt = rec.prompt
+            table.insert(list, {
+                key = m, kind = "Mapa", model = m, id = id,
+                index = data and data.brainrot or (typeof(prompt) == "Instance" and prompt.ObjectText) or oh.displayName,
+                mutation = data and data.mutation or oh.mutation,
+                traits = data and splitTraits(data.traits) or oh.traits or {},
+                timer = data and data.timer, despawn = data and data.despawnTimer,
+                grabbed = data and data.grabbed ~= nil or oh.stolen ~= nil,
+                overhead = oh, data = data,
+            })
+        end
+    end
+    return list
+end
+
+-- ─── Texto de info ───────────────────────────────────────────────────────────
+local function eggInfo(e, hrp)
+    local a = type(e.index) == "string" and AnimalsData[e.index] or nil
+    local name = a and a.DisplayName or e.index or "Egg"
+    local rarity = a and a.Rarity or (e.overhead and e.overhead.rarity)
+    local rd = rarity and RaritiesData[rarity]
+    local rcolor = rd and rd.Color or Color3.fromRGB(230, 230, 230)
+    local mutEmoji = e.mutation and emojiFor(MUTATION_EMOJI, e.mutation, "✨") or ""
+    local md = e.mutation and MutationsData[e.mutation]
+
+    local traitsTxt = {}
+    for _, t in ipairs(e.traits) do
+        table.insert(traitsTxt, emojiFor(TRAIT_EMOJI, t, "🔹") .. " " .. esc(t))
+    end
+
+    local timerTxt
+    if type(e.hatchAt) == "number" then
+        timerTxt = fmtTime(e.hatchAt - workspace:GetServerTimeNow())
+    elseif type(e.timer) == "number" then
+        timerTxt = fmtTime(e.timer)
+    elseif e.overhead and e.overhead.generation then
+        timerTxt = e.overhead.generation
+    end
+
+    local pos = e.model:GetPivot().Position
+    local dist = hrp and (pos - hrp.Position).Magnitude
+
+    local L = {}
+    table.insert(L, ('<font size="15"><b>%s</b></font>'):format(esc(name)))
+    if rarity then
+        table.insert(L, ('⭐ Raridade: <font color="#%s"><b>%s</b></font>'):format(hex(rcolor), esc(rarity)))
+    end
+    if e.mutation then
+        local mc = md and (md.Color or md.TextColor) or nil
+        table.insert(L, ('%s Mutação: <font color="#%s"><b>%s</b></font>'):format(mutEmoji, typeof(mc) == "Color3" and hex(mc) or "FFD54A", esc(e.mutation)))
+    else
+        table.insert(L, "⚪ Mutação: nenhuma")
+    end
+    table.insert(L, ("🧬 Traits (%d): %s"):format(#e.traits, #traitsTxt > 0 and table.concat(traitsTxt, ", ") or "nenhum"))
+    if timerTxt then table.insert(L, "⏱️ Choca em: <b>" .. esc(timerTxt) .. "</b>") end
+    if type(e.despawn) == "number" then table.insert(L, "⌛ Some em: " .. esc(fmtTime(e.despawn))) end
+    if e.kind == "Plot" then
+        table.insert(L, "🏠 Plot de: <b>" .. esc(e.owner) .. "</b>")
+    else
+        table.insert(L, "🗺️ No mapa" .. (e.grabbed and ' — <font color="#FF5555">PEGO</font>' or " — livre"))
+    end
+    if dist then table.insert(L, ("📏 Distância: %.0f studs"):format(dist)) end
+    table.insert(L, "📍 Posição: " .. fmtVal(pos))
+    if e.index and a and e.index ~= name then table.insert(L, "🔑 Index: " .. esc(e.index)) end
+
+    -- Tudo o que tiver no Datas.Animals (campos simples)
+    if a then
+        local keys = {}
+        for k, v in pairs(a) do
+            local tv = typeof(v)
+            if k ~= "DisplayName" and k ~= "Rarity" and tv ~= "function" and tv ~= "Instance" then
+                table.insert(keys, k)
+            end
+        end
+        table.sort(keys, function(x, y) return tostring(x) < tostring(y) end)
+        for _, k in ipairs(keys) do
+            table.insert(L, ('<font color="#9A9A9A">• %s: %s</font>'):format(esc(k), esc(fmtVal(a[k]))))
+        end
+    end
+    -- Atributos do model / dados do pool
+    local extra = e.attrs or e.data
+    if extra then
+        local keys = {}
+        for k in pairs(extra) do table.insert(keys, k) end
+        table.sort(keys, function(x, y) return tostring(x) < tostring(y) end)
+        for _, k in ipairs(keys) do
+            local v = extra[k]
+            if k == "HatchAt" or k == "EggPlacedAt" or k == "PetGrowInAt" then
+                v = type(v) == "number" and (fmtTime(v - workspace:GetServerTimeNow()) or v) or v
+            end
+            if typeof(v) ~= "function" then
+                table.insert(L, ('<font color="#7A7A7A">◦ %s: %s</font>'):format(esc(k), esc(fmtVal(v))))
+            end
+        end
+    end
+
+    local short = ("%s%s%s"):format(
+        mutEmoji ~= "" and (mutEmoji .. " ") or "",
+        name,
+        #e.traits > 0 and (" " .. (function()
+            local t = {}
+            for _, x in ipairs(e.traits) do table.insert(t, emojiFor(TRAIT_EMOJI, x, "🔹")) end
+            return table.concat(t)
+        end)()) or "")
+    return table.concat(L, "\n"), short, rcolor, timerTxt, dist
+end
+
+-- ─── ESP ─────────────────────────────────────────────────────────────────────
+local espFolder = Instance.new("Folder")
+espFolder.Name = "EggESP"
+espFolder.Parent = sg
+
+local function makeEsp(e)
+    local hl = Instance.new("Highlight")
+    hl.Adornee = e.model
+    hl.FillTransparency = 0.6
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = espFolder
+
+    local bb = Instance.new("BillboardGui")
+    bb.Adornee = e.model.PrimaryPart or e.model:FindFirstChildWhichIsA("BasePart", true)
+    bb.Size = UDim2.new(0, 220, 0, 48)
+    bb.StudsOffset = Vector3.new(0, 4, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 2000
+    bb.Parent = espFolder
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.fromScale(1, 1)
+    t.BackgroundTransparency = 1
+    t.TextColor3 = Color3.new(1, 1, 1)
+    t.TextStrokeTransparency = 0.3
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 13
+    t.RichText = true
+    t.TextWrapped = true
+    t.Parent = bb
+    return { hl = hl, bb = bb, label = t }
+end
+
+-- ─── HUB ─────────────────────────────────────────────────────────────────────
+local hub = Instance.new("Frame")
+hub.Name = "EggHub"
+hub.Size = UDim2.new(0, 460, 0, 520)
+hub.Position = UDim2.new(1, -480, 0.5, -260)
+hub.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+hub.BorderSizePixel = 0
+hub.Active, hub.Draggable = true, true
+hub.Visible = false
+hub.Parent = sg
+Instance.new("UICorner", hub).CornerRadius = UDim.new(0, 10)
+local hubStroke = Instance.new("UIStroke", hub)
+hubStroke.Color, hubStroke.Thickness = Color3.fromRGB(180, 20, 20), 1.5
+
+local hubTitle = Instance.new("TextLabel")
+hubTitle.Size = UDim2.new(1, -24, 0, 36)
+hubTitle.Position = UDim2.new(0, 12, 0, 4)
+hubTitle.BackgroundTransparency = 1
+hubTitle.Font, hubTitle.TextSize = Enum.Font.GothamBold, 14
+hubTitle.TextColor3 = Color3.fromRGB(220, 220, 220)
+hubTitle.TextXAlignment = Enum.TextXAlignment.Left
+hubTitle.Text = "🥚 Eggs no servidor"
+hubTitle.Parent = hub
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -16, 1, -48)
+scroll.Position = UDim2.new(0, 8, 0, 42)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 5
+scroll.ScrollBarImageColor3 = Color3.fromRGB(180, 20, 20)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new()
+scroll.Parent = hub
+local layout = Instance.new("UIListLayout", scroll)
+layout.Padding = UDim.new(0, 8)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+-- Cópia visual do model pro ViewportFrame (sem scripts, prompts e GUIs).
+local function cloneForPreview(model)
+    local oldArch = model.Archivable
+    model.Archivable = true
+    local ok, c = pcall(function() return model:Clone() end)
+    model.Archivable = oldArch
+    if not ok or not c then return nil end
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("LuaSourceContainer") or d:IsA("ProximityPrompt") or d:IsA("BillboardGui")
+            or d:IsA("SurfaceGui") or d:IsA("Highlight") or d:IsA("Sound") then
+            d:Destroy()
+        elseif d:IsA("BasePart") then
+            d.Anchored = true
+        end
+    end
+    return c
+end
+
+local function makeCard(e)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, -8, 0, 0)
+    card.AutomaticSize = Enum.AutomaticSize.Y
+    card.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    card.BorderSizePixel = 0
+    card.Parent = scroll
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local cs = Instance.new("UIStroke", card)
+    cs.Thickness = 1
+    local minH = Instance.new("UISizeConstraint", card)
+    minH.MinSize = Vector2.new(0, 210)
+
+    -- Preview 3D à esquerda
+    local vp = Instance.new("ViewportFrame")
+    vp.Size = UDim2.new(0, 140, 0, 140)
+    vp.Position = UDim2.new(0, 8, 0, 8)
+    vp.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+    vp.BorderSizePixel = 0
+    vp.Ambient = Color3.fromRGB(200, 200, 200)
+    vp.LightColor = Color3.fromRGB(255, 255, 255)
+    vp.Parent = card
+    Instance.new("UICorner", vp).CornerRadius = UDim.new(0, 6)
+    local cam = Instance.new("Camera")
+    cam.FieldOfView = 40
+    cam.Parent = vp
+    vp.CurrentCamera = cam
+    local world = Instance.new("WorldModel", vp)
+    local copy = cloneForPreview(e.model)
+    local center, radius = Vector3.zero, 5
+    if copy then
+        copy.Parent = world
+        local cf, size = copy:GetBoundingBox()
+        center, radius = cf.Position, math.max(size.Magnitude / 2, 1)
+    end
+
+    -- TP até o ovo
+    local tp = Instance.new("TextButton")
+    tp.Size = UDim2.new(0, 140, 0, 22)
+    tp.Position = UDim2.new(0, 8, 0, 152)
+    tp.BackgroundColor3 = Color3.fromRGB(170, 20, 20)
+    tp.BorderSizePixel = 0
+    tp.Font, tp.TextSize = Enum.Font.GothamBold, 11
+    tp.TextColor3 = Color3.new(1, 1, 1)
+    tp.Text = "TP"
+    tp.Parent = card
+    Instance.new("UICorner", tp).CornerRadius = UDim.new(0, 5)
+    tp.MouseButton1Click:Connect(function()
+        local _, hrp = getChar()
+        if hrp and e.model.Parent then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.CFrame = CFrame.new(e.model:GetPivot().Position + Vector3.new(0, 5, 0))
+        end
+    end)
+
+    -- Informações à direita
+    local info = Instance.new("TextLabel")
+    info.Size = UDim2.new(1, -168, 0, 0)
+    info.Position = UDim2.new(0, 158, 0, 8)
+    info.AutomaticSize = Enum.AutomaticSize.Y
+    info.BackgroundTransparency = 1
+    info.RichText = true
+    info.TextWrapped = true
+    info.TextXAlignment = Enum.TextXAlignment.Left
+    info.TextYAlignment = Enum.TextYAlignment.Top
+    info.Font = Enum.Font.Gotham
+    info.TextSize = 12
+    info.TextColor3 = Color3.fromRGB(225, 225, 225)
+    info.Parent = card
+    local pad = Instance.new("UIPadding", info)
+    pad.PaddingBottom = UDim.new(0, 8)
+
+    -- Ícones reais dos traits (Datas.Traits[x].Icon) e da mutação
+    local icons = Instance.new("Frame")
+    icons.Size = UDim2.new(0, 140, 0, 22)
+    icons.Position = UDim2.new(0, 8, 0, 178)
+    icons.BackgroundTransparency = 1
+    icons.Parent = card
+    local il = Instance.new("UIListLayout", icons)
+    il.FillDirection = Enum.FillDirection.Horizontal
+    il.Padding = UDim.new(0, 3)
+    local function addIcon(img)
+        if not img then return end
+        local i = Instance.new("ImageLabel")
+        i.Size = UDim2.new(0, 22, 0, 22)
+        i.BackgroundTransparency = 1
+        i.Image = tostring(img)
+        i.Parent = icons
+    end
+    local md = e.mutation and MutationsData[e.mutation]
+    addIcon(md and md.Icon)
+    for _, t in ipairs(e.traits) do
+        local td = TraitsData[t]
+        addIcon(td and td.Icon)
+    end
+
+    return {
+        card = card, cam = cam, center = center, radius = radius,
+        info = info, stroke = cs, angle = math.random() * math.pi * 2,
+    }
+end
+
+-- ─── LOOP ────────────────────────────────────────────────────────────────────
+local entries = {} -- [model] = { e, esp, ui }
+
+local function clearEntry(model)
+    local ent = entries[model]
+    if not ent then return end
+    if ent.esp then ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end
+    if ent.ui then ent.ui.card:Destroy() end
+    entries[model] = nil
+end
+
+local function refresh()
+    local _, hrp = getChar()
+    local list = collectEggs()
+    local seen = {}
+    for _, e in ipairs(list) do
+        seen[e.key] = true
+        local ent = entries[e.key]
+        if not ent then
+            ent = {}
+            entries[e.key] = ent
+        end
+        ent.e = e
+        local text, short, rcolor, timerTxt, dist = eggInfo(e, hrp)
+
+        if toggles.esp then
+            ent.esp = ent.esp or makeEsp(e)
+            ent.esp.hl.FillColor = rcolor
+            ent.esp.hl.OutlineColor = rcolor
+            ent.esp.label.Text = ("%s\n%s%s"):format(esc(short),
+                timerTxt and ("⏱️ " .. esc(timerTxt) .. "  ") or "",
+                dist and ("📏 %.0f"):format(dist) or "")
+        elseif ent.esp then
+            ent.esp.hl:Destroy(); ent.esp.bb:Destroy(); ent.esp = nil
+        end
+
+        if toggles.hub then
+            ent.ui = ent.ui or makeCard(e)
+            ent.ui.info.Text = text
+            ent.ui.stroke.Color = rcolor
+            ent.ui.card.LayoutOrder = math.floor(dist or 99999)
+        elseif ent.ui then
+            ent.ui.card:Destroy(); ent.ui = nil
+        end
+    end
+    for model in pairs(entries) do
+        if not seen[model] then clearEntry(model) end
+    end
+    local plot, mapa = 0, 0
+    for _, e in ipairs(list) do if e.kind == "Plot" then plot = plot + 1 else mapa = mapa + 1 end end
+    hubTitle.Text = ("🥚 Eggs no servidor: %d   (🗺️ mapa %d · 🏠 plots %d)"):format(#list, mapa, plot)
+end
+
+onEspToggle = function() refresh() end
+onHubToggle = function(v) hub.Visible = v; refresh() end
+
+task.spawn(function()
+    while alive do
+        if toggles.esp or toggles.hub then
+            local ok, err = pcall(refresh)
+            if not ok then log("refresh erro:", err) end
+        end
+        task.wait(0.5)
+    end
+    for model in pairs(entries) do clearEntry(model) end
+end)
+
+-- Gira as prévias 3D.
+table.insert(conns, RunService.RenderStepped:Connect(function(dt)
+    if not toggles.hub then return end
+    for _, ent in pairs(entries) do
+        local ui = ent.ui
+        if ui then
+            ui.angle = ui.angle + dt * 0.8
+            local d = ui.radius / math.tan(math.rad(ui.cam.FieldOfView / 2)) * 1.1
+            local off = Vector3.new(math.sin(ui.angle) * d, ui.radius * 0.4, math.cos(ui.angle) * d)
+            ui.cam.CFrame = CFrame.lookAt(ui.center + off, ui.center)
+        end
+    end
+end))
 
 setStatus("Pronto. Veja o F9 se algo ficar cinza.")
