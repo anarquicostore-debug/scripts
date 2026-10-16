@@ -1059,11 +1059,16 @@ end
 
 paintAuto()
 
+local HIDDEN_POS = Vector3.new(10000, 10000, 10000)
+
 local function eggTarget(model)
     return function()
         if not model.Parent then return nil end
         local p = model:GetPivot().Position
-        if p.Y > 5000 then return nil end -- pego por alguém (WorldBrainrotController:111)
+        -- Ovo pego por alguém vai pra exatamente (10000, 10000, 10000)
+        -- (WorldBrainrotController:111). Ovos da pista de pulo ficam bem alto
+        -- (Y ~6500), então não dá pra usar só a altura.
+        if (p - HIDDEN_POS).Magnitude < 5 then return nil end
         return p + Vector3.new(0, 4, 0)
     end
 end
@@ -1101,9 +1106,12 @@ function startEggJob(e, card, button)
     task.spawn(function()
         local model = e.model
         setStatus("Voando até o ovo...", 130, 130, 130)
+        if not eggTarget(model)() then
+            return finish("Esse ovo foi pego por alguém ou sumiu.", false)
+        end
         local reached = flyWait(eggTarget(model), { model })
         if not alive() then return end
-        if not reached then return finish("Não chegou no ovo.", false) end
+        if not reached then return finish("Não chegou no ovo (veja F9).", false) end
 
         -- Só voar
         if not (autoCollect and e.kind == "Mapa" and e.id ~= nil) then
