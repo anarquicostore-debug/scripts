@@ -1673,6 +1673,92 @@ local function waitAttr(name, value, timeout)
     return LP:GetAttribute(name) == value
 end
 
+-- Notificação verde de sucesso do próprio jogo (NotificationController:Success,
+-- com o som "Success"). É só visual, no seu cliente. Se não der, usa a nossa.
+local GameNotify = (function()
+    local ok, m = pcall(function()
+        local f = ReplicatedStorage:FindFirstChild("Controllers")
+        local n = f and f:FindFirstChild("NotificationController")
+        return n and require(n)
+    end)
+    return ok and type(m) == "table" and m or nil
+end)()
+local function successNotify(msg)
+    log("[sucesso]", msg)
+    if GameNotify and type(GameNotify.Success) == "function" then
+        if pcall(GameNotify.Success, GameNotify, msg) then return end
+    end
+    notify(msg, "ok", 5)
+end
+
+-- Colocar o ovo como o clique do jogo faz (JumpLTMController:967-981):
+-- RequestEggPlace:FireServer(posição) com um ponto do SEU plot (raycast pra baixo,
+-- o dono do que foi atingido tem que ser você). Antes o script mandava sem posição
+-- (o caminho do controle, linha 1021) e o servidor recusava. Tenta o ponto embaixo
+-- de você e, se recusar, outros pontos do chão do plot, do mais perto pro mais longe.
+local function placeSpots()
+    local spots = {}
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LP.Character }
+    local function probe(origin)
+        local r = workspace:Raycast(origin, Vector3.new(0, -80, 0), params)
+        if r and plotOwner(r.Instance) == LP.UserId then table.insert(spots, r.Position) end
+    end
+    local _, hrp = getChar()
+    if hrp then probe(hrp.Position + Vector3.new(0, 2, 0)) end
+    local plot = getOwnPlot()
+    local floor = plot and plot:FindFirstChild("Floor")
+    if floor and floor:IsA("BasePart") then
+        local extra = {}
+        for ix = -2, 2 do
+            for iz = -2, 2 do
+                table.insert(extra, (floor.CFrame * CFrame.new(ix * floor.Size.X * 0.18,
+                    floor.Size.Y / 2 + 30, iz * floor.Size.Z * 0.18)).Position)
+            end
+        end
+        if hrp then
+            table.sort(extra, function(p, q) return (p - hrp.Position).Magnitude < (q - hrp.Position).Magnitude end)
+        end
+        for _, o in ipairs(extra) do probe(o) end
+    end
+    return spots
+end
+
+-- Devolve true, ou false + motivo: "notcarrying", "noremote", "nospot", "rejected"
+local function placeEgg(tag)
+    if LP:GetAttribute("CarryingJumpEgg") ~= true then return false, "notcarrying" end
+    if not eggRemote then return false, "noremote" end
+    local spots = placeSpots()
+    if #spots == 0 then return false, "nospot" end
+    for i = 1, math.min(#spots, 6) do
+        eggRemote:FireServer(spots[i])
+        log(("RequestEggPlace%s (%.0f, %.0f, %.0f)"):format(tag and (" " .. tag) or "", spots[i].X, spots[i].Y, spots[i].Z))
+        if waitAttr("CarryingJumpEgg", false, 1.2) then return true end
+        if LP:GetAttribute("CarryingJumpEgg") ~= true then return true end
+    end
+    return false, "rejected"
+end
+
+-- Explica por que não colocou
+local function placeProblem(reason)
+    if reason == "notcarrying" then
+        return notifyProblem("Você não está carregando nenhum ovo", "Pegue um ovo (botão Coletar no hub) e tente de novo.", "warn", 6)
+    elseif reason == "noremote" then
+        return notifyProblem("Não dá pra colocar ovos agora", "O jogo pode ter atualizado (remote não encontrada). Reinicie o script.")
+    elseif reason == "nospot" then
+        return notifyProblem("Não achei o chão do seu plot embaixo de você",
+            "O ovo continua na sua mão. Fique em cima do chão do seu plot e use \"Colocar ovo agora\" (aba Base).")
+    end
+    local used, cap = plotOccupancy()
+    if used and cap and used >= cap then
+        return notifyProblem(("Seu plot está cheio (%d/%d), não deu pra colocar o ovo"):format(used, cap),
+            "O ovo continua na sua mão. Choque, venda ou pegue um ovo/pet do plot e use \"Colocar ovo agora\" (aba Base).")
+    end
+    return notifyProblem("O servidor recusou todos os lugares tentados",
+        "O ovo continua na sua mão. Ande pra uma parte livre do chão do seu plot e use \"Colocar ovo agora\" (aba Base).")
+end
+
 local function cancelJob()
     local j = currentJob
     currentJob = nil
@@ -1810,22 +1896,16 @@ local function startEggJob(e, ui, mode)
                 return fail("Você não ficou em cima do seu plot",
                     "O ovo continua na sua mão. Ande até o chão do plot e use \"Colocar ovo agora\" (aba Base).")
             end
-            if not eggRemote then
-                return fail("Não dá pra colocar ovos agora", "O jogo pode ter atualizado (remote não encontrada). Reinicie o script.")
-            end
-            eggRemote:FireServer() -- mesma chamada do botão do jogo (JumpLTMController:1021)
-            log("RequestEggPlace")
-            if waitAttr("CarryingJumpEgg", false, 3) then
-                finish(name .. " colocado no seu plot!", "ok")
+            setStatus("Colocando " .. name .. "...")
+            local placed, why2 = placeEgg("(coletar)")
+            if currentJob == job then currentJob = nil end
+            job.reset()
+            if placed then
+                setStatus(name .. " colocado no seu plot!")
+                successNotify(name .. " foi colocado no seu plot!")
             else
-                local used, cap = plotOccupancy()
-                if used and cap and used >= cap then
-                    fail(("Seu plot está cheio (%d/%d), não deu pra colocar o ovo"):format(used, cap),
-                        "O ovo continua na sua mão. Choque, venda ou pegue um ovo/pet do plot e use \"Colocar ovo agora\" (aba Base).")
-                else
-                    fail("O servidor não aceitou colocar o ovo",
-                        "O ovo continua na sua mão. Seu plot pode estar sem espaço livre: libere um lugar e use \"Colocar ovo agora\" (aba Base).")
-                end
+                setStatus("Não deu pra colocar o ovo.")
+                placeProblem(why2)
             end
         end)
         if not ok then
@@ -2492,15 +2572,21 @@ task.spawn(function()
 end)
 
 -- ═══ AUTO COLOCAR OVO / BRAINROT ═════════════════════════════════════════════
+local autoPlaceWarnAt = 0
 task.spawn(function()
     while alive do
         task.wait(1)
         pcall(function()
             -- Ovo: só se carregando (CarryingJumpEgg) e no próprio plot; não atrapalha a coleta
             if toggles.egg and eggRemote and not currentJob and LP:GetAttribute("CarryingJumpEgg") == true and onOwnPlot() then
-                eggRemote:FireServer()
-                log("RequestEggPlace (auto)")
-                setStatus("Ovo colocado.")
+                local placed, why = placeEgg("(auto)")
+                if placed then
+                    setStatus("Ovo colocado.")
+                    successNotify("Ovo colocado no seu plot!")
+                elseif why == "rejected" and os.clock() - (autoPlaceWarnAt or 0) > 20 then
+                    autoPlaceWarnAt = os.clock() -- não repete o aviso toda hora
+                    placeProblem(why)
+                end
             end
             -- Brainrot: só se carregando (CarryingBaseBrainrot) e no próprio plot
             if toggles.brainrot and brainRemote and LP:GetAttribute("CarryingBaseBrainrot") == true and onOwnPlot() then
@@ -2585,23 +2671,12 @@ local function buildMainUI()
             if not onOwnPlot() then
                 return notifyProblem("Você não está em cima do seu plot", "Ande até o chão do seu plot e clique de novo.", "warn", 6)
             end
-            if not eggRemote then
-                return notifyProblem("Não dá pra colocar ovos agora", "O jogo pode ter atualizado (remote não encontrada). Reinicie o script.")
-            end
-            eggRemote:FireServer()
-            log("RequestEggPlace (manual)")
             task.spawn(function()
-                if waitAttr("CarryingJumpEgg", false, 3) then
-                    notify("Ovo colocado no seu plot!", "ok", 5)
+                local placed, why = placeEgg("(manual)")
+                if placed then
+                    successNotify("Ovo colocado no seu plot!")
                 else
-                    local used, cap = plotOccupancy()
-                    if used and cap and used >= cap then
-                        notifyProblem(("Seu plot está cheio (%d/%d)"):format(used, cap),
-                            "Choque, venda ou pegue um ovo/pet do plot pra liberar espaço.")
-                    else
-                        notifyProblem("O servidor não aceitou colocar o ovo",
-                            "Seu plot pode estar sem espaço livre. Libere um lugar e tente de novo.")
-                    end
+                    placeProblem(why)
                 end
             end)
         end })
