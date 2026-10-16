@@ -2,6 +2,7 @@
 -- Fonte: ReplicatedStorage.Controllers.JumpLTMController (dump)
 --   :32  RequestEggPlace         v_u_32:FireServer()            (linha 1021)
 --   :33  RequestBrainrotPlace    v_u_33:FireServer()            (linha 1070)
+--   :34  RequestTrampolineUpgrade v_u_34:FireServer(plotOrder)  (linha 1188)
 
 -- ─── SERVICES ─────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
@@ -105,6 +106,7 @@ end
 local START_INDEX = {
     setupEggPlaceInput     = 9,
     setupPlaceButton       = 10,
+    setupTrampolineSignGui = 11,
 }
 local inner = {}
 local JLC -- tabela do JumpLTMController (também guarda RenderedEggs)
@@ -141,6 +143,8 @@ end
 
 local eggRemote     = resolve("RequestEggPlace", inner.setupEggPlaceInput, "JumpLTMService/RequestEggPlace")
 local brainRemote   = resolve("RequestBrainrotPlace", inner.setupPlaceButton, "JumpLTMService/RequestBrainrotPlace")
+-- RequestTrampolineUpgrade:FireServer(plotOrder)  (JumpLTMController:1188)
+local upgradeRemote = resolve("RequestTrampolineUpgrade", inner.setupTrampolineSignGui, "JumpLTMService/RequestTrampolineUpgrade")
 
 -- Grab de ovo do mapa: WorldBrainrotController.lua:18
 --   v_u_14 = Net:RemoteEvent("WorldBrainrotService/Grab")
@@ -181,7 +185,6 @@ local function onOwnPlot()
     return math.abs(p.X) <= floor.Size.X / 2 and math.abs(p.Z) <= floor.Size.Z / 2
 end
 
--- ─── GUI ──────────────────────────────────────────────────────────────────────
 -- ─── GUI ROOT (protegida) ────────────────────────────────────────────────────
 -- A GUI vai pro container escondido do executor (gethui), com protect_gui quando
 -- existir e nome aleatório. Os scripts do jogo não enxergam esse container.
@@ -218,607 +221,806 @@ local function newProtectedGui(tag)
 end
 
 local sg = newProtectedGui("V3ntJumpForEggGui")
+local alive = true
+local conns = {}
+local toggles = { esp = false, hub = false, egg = false, brainrot = false, upgrade = false }
 
-local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 300, 0, 420)
-frame.Position         = UDim2.new(0, 20, 0.5, -210)
-frame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-frame.BorderSizePixel  = 0
-frame.Active, frame.Draggable = true, true
-frame.Parent = sg
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
-local stroke = Instance.new("UIStroke", frame)
-stroke.Color, stroke.Thickness = Color3.fromRGB(180, 20, 20), 1.5
+-- ─── CONFIG (salva na pasta workspace do executor) ───────────────────────────
+-- Arquivo: workspace/V3nt/JumpForEgg.json  → { "flySpeed": 60 }
+local HttpService = game:GetService("HttpService")
+local CONFIG_DIR, CONFIG_FILE = "V3nt", "V3nt/JumpForEgg.json"
+local config = { flySpeed = 60 }
 
-local topBar = Instance.new("Frame")
-topBar.Size, topBar.BackgroundColor3, topBar.BorderSizePixel = UDim2.new(1, 0, 0, 42), Color3.fromRGB(20, 20, 20), 0
-topBar.Parent = frame
-Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 10)
-local fix = Instance.new("Frame")
-fix.Size, fix.Position = UDim2.new(1, 0, 0, 10), UDim2.new(0, 0, 1, -10)
-fix.BackgroundColor3, fix.BorderSizePixel = Color3.fromRGB(20, 20, 20), 0
-fix.Parent = topBar
+local function loadConfig()
+    local ok, data = pcall(function()
+        if isfile and isfile(CONFIG_FILE) then
+            return HttpService:JSONDecode(readfile(CONFIG_FILE))
+        end
+    end)
+    if ok and type(data) == "table" then
+        if type(data.flySpeed) == "number" then config.flySpeed = math.clamp(data.flySpeed, 10, 999) end
+        log("config carregada:", CONFIG_FILE, "flySpeed =", config.flySpeed)
+    end
+end
 
-local title = Instance.new("TextLabel")
-title.Size, title.Position = UDim2.new(1, -50, 1, 0), UDim2.new(0, 14, 0, 0)
-title.BackgroundTransparency = 1
-title.Text = "V3nt - Jump For Egg"
-title.TextColor3 = Color3.fromRGB(220, 220, 220)
-title.Font, title.TextSize = Enum.Font.GothamBold, 13
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = topBar
+local function saveConfig()
+    local ok, err = pcall(function()
+        if makefolder and isfolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+        writefile(CONFIG_FILE, HttpService:JSONEncode(config))
+    end)
+    if not ok then log("não salvou a config:", err) end
+    return ok
+end
 
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size, closeBtn.Position = UDim2.new(0, 26, 0, 26), UDim2.new(1, -34, 0.5, -13)
-closeBtn.BackgroundColor3 = Color3.fromRGB(160, 20, 20)
-closeBtn.Text, closeBtn.TextColor3 = "X", Color3.fromRGB(255, 255, 255)
-closeBtn.Font, closeBtn.TextSize, closeBtn.BorderSizePixel = Enum.Font.GothamBold, 12, 0
-closeBtn.Parent = topBar
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+loadConfig()
 
-local status = Instance.new("TextLabel")
-status.Size, status.Position = UDim2.new(1, -24, 0, 30), UDim2.new(0, 12, 1, -36)
-status.BackgroundTransparency = 1
-status.Text, status.TextColor3 = "", Color3.fromRGB(130, 130, 130)
-status.Font, status.TextSize, status.TextWrapped = Enum.Font.Gotham, 11, true
-status.Parent = frame
-
-local statusHook -- espelha o status na janela principal
-local function setStatus(msg, r, g, b)
-    status.Text = msg
-    status.TextColor3 = Color3.fromRGB(r or 130, g or 130, b or 130)
+-- ─── STATUS ──────────────────────────────────────────────────────────────────
+local statusHook -- a janela principal liga isso no texto de status
+local function setStatus(msg)
     if statusHook then pcall(statusHook, msg) end
 end
 
--- ─── NOTIFICAÇÕES (topo da tela, somem depois de 10s) ─────────────────────────
+-- ─── NOTIFICAÇÕES (topo da tela, somem sozinhas) ─────────────────────────────
 local notifHolder = Instance.new("Frame")
 notifHolder.Name = "Notifs"
-notifHolder.Size = UDim2.new(0, 420, 0, 0)
-notifHolder.Position = UDim2.new(0.5, -210, 0, 12)
+notifHolder.AnchorPoint = Vector2.new(0.5, 0)
+notifHolder.Position = UDim2.new(0.5, 0, 0, 14)
+notifHolder.Size = UDim2.new(0, 380, 0, 0)
 notifHolder.AutomaticSize = Enum.AutomaticSize.Y
 notifHolder.BackgroundTransparency = 1
+notifHolder.ZIndex = 50
 notifHolder.Parent = sg
-local notifLayout = Instance.new("UIListLayout", notifHolder)
-notifLayout.Padding = UDim.new(0, 6)
-notifLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+do
+    local l = Instance.new("UIListLayout", notifHolder)
+    l.Padding = UDim.new(0, 8)
+    l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+end
 
-local function notify(msg, color, seconds)
+local NOTIF_COLORS = {
+    info = Color3.fromRGB(255, 59, 92),
+    ok   = Color3.fromRGB(60, 210, 120),
+    warn = Color3.fromRGB(240, 170, 60),
+    err  = Color3.fromRGB(240, 70, 80),
+}
+
+local function notify(msg, kind, seconds)
     log("[notif]", msg)
     pcall(function()
-        local box = Instance.new("TextLabel")
+        local color = typeof(kind) == "Color3" and kind or NOTIF_COLORS[kind or "info"] or NOTIF_COLORS.info
+        local box = Instance.new("Frame")
         box.Size = UDim2.new(1, 0, 0, 0)
         box.AutomaticSize = Enum.AutomaticSize.Y
         box.BackgroundColor3 = Color3.fromRGB(20, 20, 27)
-        box.BackgroundTransparency = 0.05
         box.BorderSizePixel = 0
-        box.Font, box.TextSize = Enum.Font.GothamBold, 14
-        box.TextWrapped = true
-        box.TextColor3 = Color3.new(1, 1, 1)
-        box.Text = msg
+        box.ZIndex = 50
         box.Parent = notifHolder
-        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 12)
+        local st = Instance.new("UIStroke", box)
+        st.Color, st.Thickness, st.Transparency = color, 1.5, 0.2
         local pad = Instance.new("UIPadding", box)
         pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 10), UDim.new(0, 10)
-        pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
-        local st = Instance.new("UIStroke", box)
-        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        st.Color = color or Color3.fromRGB(220, 160, 60)
-        st.Thickness = 1.5
+        pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 16), UDim.new(0, 12)
+        local bar = Instance.new("Frame")
+        bar.Size = UDim2.new(0, 4, 1, 0)
+        bar.Position = UDim2.new(0, -10, 0, 0)
+        bar.BackgroundColor3 = color
+        bar.BorderSizePixel = 0
+        bar.ZIndex = 51
+        bar.Parent = box
+        Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 2)
+        local t = Instance.new("TextLabel")
+        t.Size = UDim2.new(1, 0, 0, 0)
+        t.AutomaticSize = Enum.AutomaticSize.Y
+        t.BackgroundTransparency = 1
+        t.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+        t.TextSize = 13
+        t.TextWrapped = true
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.TextColor3 = Color3.fromRGB(235, 235, 245)
+        t.Text = msg
+        t.ZIndex = 51
+        t.Parent = box
         task.delay(seconds or 10, function()
             pcall(function()
-                local ti = TweenInfo.new(0.4)
-                TweenService:Create(box, ti, { BackgroundTransparency = 1, TextTransparency = 1 }):Play()
+                local ti = TweenInfo.new(0.35)
+                TweenService:Create(box, ti, { BackgroundTransparency = 1 }):Play()
+                TweenService:Create(t, ti, { TextTransparency = 1 }):Play()
                 TweenService:Create(st, ti, { Transparency = 1 }):Play()
-                task.wait(0.45)
+                TweenService:Create(bar, ti, { BackgroundTransparency = 1 }):Play()
+                task.wait(0.4)
                 box:Destroy()
             end)
         end)
     end)
 end
 
--- ─── FLY ──────────────────────────────────────────────────────────────────────
--- Movimento físico com LinearVelocity (igual launchFromPad, linha 555) seguindo
--- uma rota calculada com Spherecast:
---   início → desvia pro lado até achar céu livre → sobe/desce reto até a
---   altitude de cruzeiro → vai de lado → desce ao lado/em cima do alvo → alvo
--- Proteções:
---   • rota testada com folga do tamanho do personagem; se não achar, tenta com
---     folga menor e, no fim, uma rota alta sem teste;
---   • olha à frente a cada frame e freia antes de bater em algo;
---   • se o servidor puxar de volta ou não houver progresso, baixa a velocidade e
---     recalcula (até 6 vezes) em vez de parar;
---   • qualquer erro limpa tudo (sem forças presas no personagem);
---   • se parar no ar (alvo sumiu, travou, erro, cancelado), leva o player pra
---     ilha mais próxima, ou pro próprio plot, em vez de deixar cair.
-local FLY = { speed = 60, radius = 4 }
-local flying = nil
-local landing = false
-local safeLand -- definida abaixo
+-- ═══ V3NT UI ═════════════════════════════════════════════════════════════════
+-- Interface própria do script (não reutiliza nenhuma GUI/biblioteca):
+-- janela escura com barra lateral de abas, linhas com título + descrição,
+-- switch animado, botões, campos de texto e textos que atualizam.
+-- Tudo em pixels com UIScale pra telas pequenas, dentro da GUI protegida.
+local V3ntUI = {}
+do
+    local UIS = game:GetService("UserInputService")
+    local THEME = {
+        bg        = Color3.fromRGB(14, 14, 19),
+        panel     = Color3.fromRGB(20, 20, 27),
+        card      = Color3.fromRGB(27, 27, 36),
+        cardHover = Color3.fromRGB(33, 33, 44),
+        stroke    = Color3.fromRGB(45, 45, 58),
+        text      = Color3.fromRGB(235, 235, 245),
+        sub       = Color3.fromRGB(150, 150, 168),
+        accent    = Color3.fromRGB(255, 59, 92),
+        accent2   = Color3.fromRGB(176, 22, 64),
+        off       = Color3.fromRGB(58, 58, 72),
+    }
+    V3ntUI.Theme = THEME
+    local FONT      = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+    local FONT_BOLD = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+    local FONT_HEAVY = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy)
 
-local function castParams(extraIgnore)
+    local function new(class, props, parent)
+        local o = Instance.new(class)
+        for k, v in pairs(props or {}) do pcall(function() o[k] = v end) end
+        if parent then o.Parent = parent end
+        return o
+    end
+    local function corner(o, r) return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, o) end
+    local function outline(o, color, t, tr)
+        return new("UIStroke", { Color = color or THEME.stroke, Thickness = t or 1, Transparency = tr or 0,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
+    end
+    local function accentGradient(o, rot)
+        return new("UIGradient", { Rotation = rot or 0,
+            Color = ColorSequence.new(THEME.accent, THEME.accent2) }, o)
+    end
+    local function tween(o, t, props)
+        TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props):Play()
+    end
+    local function text(parent, props)
+        local l = new("TextLabel", { BackgroundTransparency = 1, FontFace = FONT, TextColor3 = THEME.text,
+            TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+            TextWrapped = true, RichText = true }, parent)
+        for k, v in pairs(props) do l[k] = v end
+        return l
+    end
+    local function safeCall(fn, ...)
+        if not fn then return end
+        local args = table.pack(...)
+        task.spawn(function()
+            local ok, err = pcall(fn, table.unpack(args, 1, args.n))
+            if not ok then warn("[V3ntUI] " .. tostring(err)) end
+        end)
+    end
+    local function draggable(handle, target)
+        local dragging, startPos, startInput
+        handle.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging, startPos, startInput = true, target.Position, input.Position
+                target:SetAttribute("V3ntDragged", false)
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+        UIS.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local d = input.Position - startInput
+                if d.Magnitude > 6 then target:SetAttribute("V3ntDragged", true) end
+                target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    V3ntUI.util = {
+        new = new, corner = corner, outline = outline, accentGradient = accentGradient,
+        tween = tween, text = text, draggable = draggable,
+        FONT = FONT, FONT_BOLD = FONT_BOLD, FONT_HEAVY = FONT_HEAVY,
+    }
+
+    function V3ntUI.new(gui)
+        local lib = {}
+
+        function lib:CreateWindow(cfg)
+            cfg = cfg or {}
+            local W, H = 560, 380
+
+            -- escala automática em telas pequenas
+            local scale = new("UIScale", { Scale = 1 }, gui)
+            local function rescale()
+                local cam = workspace.CurrentCamera
+                local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+                scale.Scale = math.clamp(math.min(vp.X / (W + 80), vp.Y / (H + 80)), 0.55, 1)
+            end
+            rescale()
+            pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale) end)
+
+            local main = new("Frame", { Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H),
+                BackgroundColor3 = THEME.bg, BorderSizePixel = 0, Active = true, ClipsDescendants = true }, gui)
+            corner(main, 12)
+            outline(main, THEME.stroke, 1)
+
+            -- barra superior
+            local top = new("Frame", { Name = "Top", Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = THEME.panel,
+                BorderSizePixel = 0, Active = true }, main)
+            local accentLine = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
+                BorderSizePixel = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, top)
+            accentGradient(accentLine)
+            local logo = new("Frame", { Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(12, 9),
+                BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, top)
+            corner(logo, 7)
+            accentGradient(logo, 45)
+            text(logo, { Size = UDim2.fromScale(1, 1), Text = "V", FontFace = FONT_HEAVY, TextSize = 18,
+                TextXAlignment = Enum.TextXAlignment.Center })
+            local titleText = tostring(cfg.Name or "V3nt")
+            local a, b = titleText:match("^(.-)%s*%-%s*(.+)$")
+            text(top, { Position = UDim2.fromOffset(48, 6), Size = UDim2.new(1, -140, 0, 20),
+                Text = a or titleText, FontFace = FONT_HEAVY, TextSize = 15 })
+            text(top, { Position = UDim2.fromOffset(48, 24), Size = UDim2.new(1, -140, 0, 16),
+                Text = b or "", TextColor3 = THEME.sub, TextSize = 11 })
+
+            local function topButton(label, x)
+                local btn = new("TextButton", { Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, x, 0, 9),
+                    BackgroundColor3 = THEME.card, AutoButtonColor = false, Text = label, FontFace = FONT_BOLD,
+                    TextSize = 14, TextColor3 = THEME.sub, BorderSizePixel = 0 }, top)
+                corner(btn, 7)
+                btn.MouseEnter:Connect(function() tween(btn, 0.15, { BackgroundColor3 = THEME.cardHover, TextColor3 = THEME.text }) end)
+                btn.MouseLeave:Connect(function() tween(btn, 0.15, { BackgroundColor3 = THEME.card, TextColor3 = THEME.sub }) end)
+                return btn
+            end
+            local closeBtn = topButton("×", -40)
+            local miniBtn = topButton("–", -74)
+            draggable(top, main)
+
+            -- barra lateral
+            local sidebar = new("Frame", { Name = "Sidebar", Position = UDim2.fromOffset(0, 46),
+                Size = UDim2.new(0, 150, 1, -46), BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, main)
+            new("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0),
+                BackgroundColor3 = THEME.stroke, BorderSizePixel = 0 }, sidebar)
+            local tabList = new("Frame", { Size = UDim2.new(1, -16, 1, -16), Position = UDim2.fromOffset(8, 10),
+                BackgroundTransparency = 1 }, sidebar)
+            new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, tabList)
+
+            local pages = new("Frame", { Name = "Pages", Position = UDim2.fromOffset(150, 46),
+                Size = UDim2.new(1, -150, 1, -46), BackgroundTransparency = 1 }, main)
+
+            -- botão flutuante pra reabrir
+            local launcher = new("TextButton", { Name = "Launcher", Size = UDim2.fromOffset(48, 48),
+                Position = UDim2.new(0, 24, 0.5, -24), BackgroundColor3 = Color3.new(1, 1, 1), Text = "V",
+                FontFace = FONT_HEAVY, TextSize = 22, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
+                Visible = false, BorderSizePixel = 0 }, gui)
+            corner(launcher, 24)
+            accentGradient(launcher, 45)
+            outline(launcher, Color3.new(1, 1, 1), 2, 0.6)
+            draggable(launcher, launcher)
+
+            local window = { Name = cfg.Name, Tabs = {} }
+            local function hide()
+                tween(main, 0.2, { Size = UDim2.fromOffset(W, 0) })
+                task.delay(0.2, function() main.Visible = false main.Size = UDim2.fromOffset(W, H) end)
+                launcher.Visible = true
+            end
+            closeBtn.Activated:Connect(hide)
+            miniBtn.Activated:Connect(hide)
+            launcher.Activated:Connect(function()
+                if launcher:GetAttribute("V3ntDragged") then return end -- foi arrasto, não clique
+                launcher.Visible = false
+                main.Visible = true
+                main.Size = UDim2.fromOffset(W, 0)
+                tween(main, 0.25, { Size = UDim2.fromOffset(W, H) })
+            end)
+
+            local function selectTab(tab)
+                for _, t in ipairs(window.Tabs) do
+                    local on = t == tab
+                    t._page.Visible = on
+                    tween(t._btn, 0.18, { BackgroundTransparency = on and 0 or 1 })
+                    tween(t._label, 0.18, { TextColor3 = on and THEME.text or THEME.sub })
+                    tween(t._bar, 0.18, { Size = UDim2.fromOffset(3, on and 18 or 0) })
+                end
+                window.SelectedTab = tab
+            end
+
+            function window:CreateTab(tcfg)
+                tcfg = type(tcfg) == "table" and tcfg or { Name = tostring(tcfg) }
+                local name = tostring(tcfg.Name)
+                local tab = { Name = name, Sections = {} }
+                local btn = new("TextButton", { Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = THEME.card,
+                    BackgroundTransparency = 1, AutoButtonColor = false, Text = "", BorderSizePixel = 0,
+                    LayoutOrder = #window.Tabs + 1 }, tabList)
+                corner(btn, 8)
+                local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+                    Size = UDim2.fromOffset(3, 0), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, btn)
+                corner(bar, 2)
+                accentGradient(bar, 90)
+                local label = text(btn, { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -18, 1, 0),
+                    Text = name, FontFace = FONT_BOLD, TextColor3 = THEME.sub })
+                tab._btn, tab._label, tab._bar = btn, label, bar
+                btn.MouseEnter:Connect(function()
+                    if window.SelectedTab ~= tab then tween(label, 0.15, { TextColor3 = THEME.text }) end
+                end)
+                btn.MouseLeave:Connect(function()
+                    if window.SelectedTab ~= tab then tween(label, 0.15, { TextColor3 = THEME.sub }) end
+                end)
+
+                local page = new("ScrollingFrame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+                    BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = THEME.accent,
+                    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                    ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false }, pages)
+                new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+                new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
+                    PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 14) }, page)
+                tab._page = page
+                btn.Activated:Connect(function() selectTab(tab) end)
+                table.insert(window.Tabs, tab)
+                if #window.Tabs == 1 then selectTab(tab) end
+
+                local order = 0
+                local function nextOrder() order = order + 1 return order end
+
+                -- cartão base: título + descrição à esquerda, controle à direita
+                local function card(title, note, controlWidth)
+                    local c = new("Frame", { Size = UDim2.new(1, 0, 0, note and 52 or 40), BackgroundColor3 = THEME.card,
+                        BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
+                    corner(c, 8)
+                    outline(c, THEME.stroke, 1, 0.3)
+                    local w = -(controlWidth or 0) - 24
+                    local t = text(c, { Position = UDim2.fromOffset(12, note and 8 or 0),
+                        Size = UDim2.new(1, w, 0, note and 18 or 40), Text = title, FontFace = FONT_BOLD, TextSize = 13 })
+                    if note then
+                        text(c, { Position = UDim2.fromOffset(12, 26), Size = UDim2.new(1, w, 0, 18),
+                            Text = note, TextColor3 = THEME.sub, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd })
+                    end
+                    c.MouseEnter:Connect(function() tween(c, 0.15, { BackgroundColor3 = THEME.cardHover }) end)
+                    c.MouseLeave:Connect(function() tween(c, 0.15, { BackgroundColor3 = THEME.card }) end)
+                    return c, t
+                end
+
+                function tab:CreateSection(scfg)
+                    scfg = type(scfg) == "table" and scfg or { Name = tostring(scfg) }
+                    local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
+                        LayoutOrder = nextOrder() }, page)
+                    text(holder, { Size = UDim2.new(1, 0, 1, 0), Text = string.upper(tostring(scfg.Name)),
+                        FontFace = FONT_BOLD, TextSize = 11, TextColor3 = THEME.accent,
+                        TextYAlignment = Enum.TextYAlignment.Bottom })
+                    local section = { Name = scfg.Name }
+
+                    function section:CreateToggle(c)
+                        local row = card(tostring(c.Name), c.Note, 44)
+                        local pill = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+                            Size = UDim2.fromOffset(40, 22), BackgroundColor3 = THEME.off, AutoButtonColor = false,
+                            Text = "", BorderSizePixel = 0 }, row)
+                        corner(pill, 11)
+                        local grad = accentGradient(pill)
+                        grad.Enabled = false
+                        local knob = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
+                            Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, pill)
+                        corner(knob, 8)
+                        local value = c.Default == true
+                        local function set(v, fire)
+                            value = v == true
+                            grad.Enabled = value
+                            tween(pill, 0.18, { BackgroundColor3 = value and Color3.new(1, 1, 1) or THEME.off })
+                            tween(knob, 0.18, { Position = UDim2.new(0, value and 21 or 3, 0.5, 0) })
+                            if fire ~= false then safeCall(c.Callback, value) end
+                        end
+                        pill.Activated:Connect(function() set(not value) end)
+                        set(value, false)
+                        return { GetValue = function() return value end, SetValue = function(_, v, fire) set(v, fire) end }
+                    end
+
+                    function section:CreateButton(c)
+                        local row = card(tostring(c.Name), c.Note, 96)
+                        local b = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+                            Size = UDim2.fromOffset(90, 28), BackgroundColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
+                            Text = tostring(c.ButtonText or "Executar"), FontFace = FONT_BOLD, TextSize = 12,
+                            TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, row)
+                        corner(b, 7)
+                        accentGradient(b, 90)
+                        local sc = new("UIScale", { Scale = 1 }, b)
+                        b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.94 }) end)
+                        b.MouseButton1Up:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
+                        b.MouseLeave:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
+                        b.Activated:Connect(function() safeCall(c.Callback) end)
+                        return {}
+                    end
+
+                    function section:CreateInput(c)
+                        local row = card(tostring(c.Name), c.Note, 110)
+                        local field = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
+                            Size = UDim2.fromOffset(104, 28), BackgroundColor3 = THEME.bg, BorderSizePixel = 0 }, row)
+                        corner(field, 7)
+                        local fs = outline(field, THEME.stroke, 1)
+                        local box = new("TextBox", { Size = UDim2.new(1, -12, 1, 0), Position = UDim2.fromOffset(6, 0),
+                            BackgroundTransparency = 1, Text = tostring(c.Default or ""),
+                            PlaceholderText = tostring(c.Placeholder or ""), PlaceholderColor3 = THEME.sub,
+                            FontFace = FONT_BOLD, TextSize = 12, TextColor3 = THEME.text, ClearTextOnFocus = false }, field)
+                        box.Focused:Connect(function() tween(fs, 0.15, { Color = THEME.accent }) end)
+                        box.FocusLost:Connect(function()
+                            tween(fs, 0.15, { Color = THEME.stroke })
+                            local v = box.Text:match("^%s*(.-)%s*$") or ""
+                            if c.MaxLength then v = v:sub(1, c.MaxLength) end
+                            box.Text = v
+                            safeCall(c.Callback, v)
+                        end)
+                        return { SetText = function(_, t) box.Text = tostring(t) end }
+                    end
+
+                    function section:CreateText(c)
+                        local row = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                            BackgroundColor3 = THEME.panel, BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
+                        corner(row, 8)
+                        new("UIPadding", { PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 9),
+                            PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, row)
+                        local l = text(row, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                            Text = tostring(c.Text or c.Name), TextColor3 = THEME.sub, TextSize = 12,
+                            TextYAlignment = Enum.TextYAlignment.Top })
+                        local set = function(_, t) l.Text = tostring(t) end
+                        return { SetText = set, Set = set }
+                    end
+
+                    table.insert(tab.Sections, section)
+                    return section
+                end
+
+                return tab
+            end
+
+            function window:GetDefaultTab() return window.Tabs[1] end
+            function window:Destroy()
+                pcall(function() main:Destroy() end)
+                pcall(function() launcher:Destroy() end)
+            end
+
+            -- entrada suave
+            main.Size = UDim2.fromOffset(W, 0)
+            tween(main, 0.3, { Size = UDim2.fromOffset(W, H) })
+            return window
+        end
+
+        function lib:Finalize() end
+        return lib
+    end
+end
+
+-- ═══ FLY (reescrito do zero) ═════════════════════════════════════════════════
+-- Como funciona:
+--   • Um único "motor" no HumanoidRootPart: LinearVelocity (move) + AlignOrientation
+--     (mantém em pé). Humanoid.PlatformStand = true durante o voo, então o
+--     Humanoid não briga com o motor (era isso que fazia subir, cair e tentar de
+--     novo). Enquanto calcula a rota o motor segura o personagem parado no ar.
+--   • Rota simples e testada antes com Spherecast:
+--       saída (o próprio lugar ou ao lado, se tiver teto) → sobe reto →
+--       vai reto na altitude livre → desce (em cima do alvo ou ao lado, se tiver
+--       teto) → alvo.  A altitude sobe de 20 em 20 studs até a linha ficar livre.
+--   • Segue os pontos sem passar deles (velocidade limitada pelo que falta).
+--   • Travou (sem chegar mais perto por 1,5s): recalcula do lugar atual, até 3x.
+--   • Alvo sumiu / travou / erro / cancelado: limpa tudo e, se estiver no ar sem
+--     chão perto, pousa na ilha mais próxima (ou no seu plot).
+--   • hold = true: ao chegar continua parado no ar até Fly.release() (usado pra
+--     segurar o "Grab" de ovos que ficam no alto).
+local Fly = { current = nil, holding = nil }
+
+local CAST_RADIUS = 2.5
+
+local function castParams(ignore)
     local p = RaycastParams.new()
     p.FilterType = Enum.RaycastFilterType.Exclude
-    local ignore = {}
-    if LP.Character then table.insert(ignore, LP.Character) end
-    for _, x in ipairs(extraIgnore or {}) do
-        if typeof(x) == "Instance" then table.insert(ignore, x) end
+    local list = {}
+    if LP.Character then table.insert(list, LP.Character) end
+    for _, x in ipairs(ignore or {}) do
+        if typeof(x) == "Instance" then table.insert(list, x) end
     end
-    p.FilterDescendantsInstances = ignore
+    p.FilterDescendantsInstances = list
     p.RespectCanCollide = true
     p.IgnoreWater = true
     return p
 end
 
-local casts = 0
--- Spherecast dá erro acima de 1024 studs: testa em trechos de 900.
-local function clear(a, b, params, radius)
+local castCount = 0
+-- Spherecast aceita no máximo 1024 studs: testa em trechos de 900.
+local function lineClear(a, b, params)
     local d = b - a
     local len = d.Magnitude
     if len < 0.5 then return true end
     local dir, from, done = d.Unit, a, 0
     while done < len do
         local step = math.min(900, len - done)
-        casts = casts + 1
-        if casts % 250 == 0 then task.wait() end
-        if workspace:Spherecast(from, radius, dir * step, params) then return false end
+        castCount = castCount + 1
+        if castCount % 200 == 0 then task.wait() end
+        local ok, hit = pcall(function() return workspace:Spherecast(from, CAST_RADIUS, dir * step, params) end)
+        if not ok or hit then return false end
         from = from + dir * step
         done = done + step
     end
     return true
 end
 
-local function ringOffsets(radii, dirs)
-    local list = { Vector3.zero }
-    for _, r in ipairs(radii) do
-        for i = 0, dirs - 1 do
-            local ang = i / dirs * math.pi * 2
-            table.insert(list, Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r))
-        end
+local RING = { Vector3.zero }
+for _, r in ipairs({ 14, 28, 50 }) do
+    for i = 0, 7 do
+        local a = i / 8 * math.pi * 2
+        table.insert(RING, Vector3.new(math.cos(a) * r, 0, math.sin(a) * r))
     end
-    return list
 end
-local START_OFFSETS = ringOffsets({ 12, 25, 45, 70, 100, 140 }, 16)
-local GOAL_OFFSETS  = ringOffsets({ 10, 20, 35, 55 }, 8)
 
-local function planPath(start, goal, params, radius)
-    casts = 0
-    if math.abs(start.Y - goal.Y) < 8 and clear(start, goal, params, radius) then
+-- Devolve a lista de pontos até o alvo (ou nil).
+local function planRoute(start, goal, params)
+    castCount = 0
+    -- perto e na mesma altura: reto
+    if (goal - start).Magnitude < 40 and math.abs(goal.Y - start.Y) < 6 and lineClear(start, goal, params) then
         return { goal }
     end
-    local alts = { goal.Y }
-    local base = math.max(goal.Y, start.Y)
-    for k = 1, 10 do table.insert(alts, base + k * 25) end
-    for _, alt in ipairs(alts) do
-        local outs = {}
-        for _, off in ipairs(START_OFFSETS) do
-            local A = start + off
-            local B = Vector3.new(A.X, alt, A.Z)
-            if clear(start, A, params, radius) and clear(A, B, params, radius) then
-                table.insert(outs, { A = A, B = B })
-                if #outs >= 6 then break end
+    -- pontos de saída (céu livre acima) e de chegada (céu livre acima do alvo/lado)
+    local exits, entries = {}, {}
+    for _, off in ipairs(RING) do
+        local p = start + off
+        if lineClear(start, p, params) then table.insert(exits, p) end
+        if #exits >= 6 then break end
+    end
+    for _, off in ipairs(RING) do
+        local p = goal + off
+        if lineClear(p, goal, params) then table.insert(entries, p) end
+        if #entries >= 6 then break end
+    end
+    local base = math.max(start.Y, goal.Y) + 6
+    for k = 0, 14 do
+        local alt = base + k * 20
+        local okExits, okEntries = {}, {}
+        for _, e in ipairs(exits) do
+            if lineClear(e, Vector3.new(e.X, alt, e.Z), params) then table.insert(okExits, e) end
+        end
+        if #okExits > 0 then
+            for _, g in ipairs(entries) do
+                if lineClear(Vector3.new(g.X, alt, g.Z), g, params) then table.insert(okEntries, g) end
             end
         end
-        local ins = {}
-        if #outs > 0 then
-            for _, off in ipairs(GOAL_OFFSETS) do
-                local D = goal + off
-                local C = Vector3.new(D.X, alt, D.Z)
-                if clear(C, D, params, radius) and clear(D, goal, params, radius) then
-                    table.insert(ins, { C = C, D = D })
-                    if #ins >= 6 then break end
-                end
-            end
-        end
-        for _, o in ipairs(outs) do
-            for _, i in ipairs(ins) do
-                if clear(o.B, i.C, params, radius) then
-                    local wp = {}
-                    for _, p in ipairs({ o.A, o.B, i.C, i.D, goal }) do
-                        local last = wp[#wp] or start
-                        if (p - last).Magnitude > 1 then table.insert(wp, p) end
+        for _, e in ipairs(okExits) do
+            for _, g in ipairs(okEntries) do
+                local A, C = Vector3.new(e.X, alt, e.Z), Vector3.new(g.X, alt, g.Z)
+                if lineClear(A, C, params) then
+                    local route, last = {}, start
+                    for _, p in ipairs({ e, A, C, g, goal }) do
+                        if (p - last).Magnitude > 1 then table.insert(route, p); last = p end
                     end
-                    log(("Rota: %d pontos, altitude %.0f, folga %.1f, %d testes"):format(#wp, alt, radius, casts))
-                    return wp
+                    log(("rota: %d pontos, altitude %.0f, %d testes"):format(#route, alt, castCount))
+                    return route
                 end
             end
         end
     end
+    log("sem rota livre (" .. castCount .. " testes)")
     return nil
 end
 
--- Tenta folgas menores e, por último, uma rota alta sem teste.
-local function planWithFallback(start, goal, ignore)
-    local params = castParams(ignore)
-    for _, r in ipairs({ FLY.radius, 3, 2 }) do
-        local ok, wp = pcall(planPath, start, goal, params, r)
-        if ok and wp then return wp end
-        if not ok then log("erro na rota (folga " .. r .. "):", wp) end
+-- motor -----------------------------------------------------------------------
+local function makeMotor(hrp, hum)
+    local att = Instance.new("Attachment")
+    att.Name = "V3ntFlyAtt"
+    att.Parent = hrp
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "V3ntFly"
+    lv.Attachment0 = att
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.MaxForce = math.huge
+    lv.VectorVelocity = Vector3.zero
+    lv.Parent = hrp
+    local ao = Instance.new("AlignOrientation")
+    ao.Name = "V3ntFlyUp"
+    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    ao.Attachment0 = att
+    ao.MaxTorque = math.huge
+    ao.Responsiveness = 60
+    local look = hrp.CFrame.LookVector
+    ao.CFrame = CFrame.lookAt(Vector3.zero, Vector3.new(look.X, 0, look.Z).Unit)
+    ao.Parent = hrp
+    hum.PlatformStand = true
+    local motor = { att = att, lv = lv, ao = ao, hum = hum, hrp = hrp }
+    function motor.face(dir)
+        local flat = Vector3.new(dir.X, 0, dir.Z)
+        if flat.Magnitude > 0.2 then ao.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit) end
     end
-    log("sem rota testada: usando rota alta de reserva")
-    local alt = math.max(start.Y, goal.Y) + 200
-    return { Vector3.new(start.X, alt, start.Z), Vector3.new(goal.X, alt, goal.Z), goal }
+    function motor.destroy()
+        pcall(function() lv:Destroy() end)
+        pcall(function() ao:Destroy() end)
+        pcall(function() att:Destroy() end)
+        pcall(function()
+            hum.PlatformStand = false
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+    return motor
 end
 
--- Chão sólido logo abaixo de pos (nil se não tiver).
-local function groundBelow(pos, params, depth)
+local function groundBelow(pos, depth, params)
     local ok, r = pcall(function()
-        return workspace:Raycast(pos, Vector3.new(0, -(depth or 1000), 0), params)
+        return workspace:Raycast(pos, Vector3.new(0, -(depth or 1000), 0), params or castParams())
     end)
-    if ok and r and r.Instance and r.Normal.Y > 0.6 then return r.Position end
+    if ok and r and r.Normal.Y > 0.5 then return r.Position end
 end
 
 local function plotLanding()
     local plot = getOwnPlot()
     local floor = plot and plot:FindFirstChild("Floor")
     if floor and floor:IsA("BasePart") then
-        return floor.Position + Vector3.new(0, floor.Size.Y / 2 + 4, 0)
+        return floor.Position + Vector3.new(0, floor.Size.Y / 2 + 3.5, 0)
     end
 end
 
--- Ilha mais próxima: chão direto embaixo, senão procura em anéis em volta.
-local function findSafeGround(origin)
+local function nearestGround(origin)
     local params = castParams()
-    local g = groundBelow(origin, params, 400)
-    if g then return g + Vector3.new(0, 4, 0) end
-    for _, rad in ipairs({ 30, 60, 110, 180, 280, 420, 650, 1000 }) do
+    local g = groundBelow(origin, 500, params)
+    if g then return g + Vector3.new(0, 3.5, 0) end
+    for _, rad in ipairs({ 40, 90, 160, 260, 400, 650, 1000 }) do
         local best, bestD
         for i = 0, 15 do
-            local ang = i / 16 * math.pi * 2
-            local p = origin + Vector3.new(math.cos(ang) * rad, 150, math.sin(ang) * rad)
-            local hit = groundBelow(p, params, 2500)
+            local a = i / 16 * math.pi * 2
+            local hit = groundBelow(origin + Vector3.new(math.cos(a) * rad, 200, math.sin(a) * rad), 3000, params)
             if hit then
                 local d = (hit - origin).Magnitude
                 if not bestD or d < bestD then best, bestD = hit, d end
             end
         end
-        if best then return best + Vector3.new(0, 4, 0) end
+        if best then return best + Vector3.new(0, 3.5, 0) end
     end
     return plotLanding()
 end
 
-local function inAirWithoutGround(hrp, hum)
-    if hum.FloorMaterial ~= Enum.Material.Air then return false end
-    return groundBelow(hrp.Position, castParams(), 40) == nil
+function Fly.release()
+    local h = Fly.holding
+    Fly.holding = nil
+    if h then h.destroy() end
 end
 
-local function cleanup(f)
-    f.alive = false
-    if f.conn then pcall(function() f.conn:Disconnect() end) end
-    pcall(function() f.lv:Destroy() end)
-    pcall(function() f.att:Destroy() end)
-    local _, hrp = getChar()
-    if hrp then pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end) end
+function Fly.cancel(reason)
+    local cur = Fly.current
+    if cur then cur.cancelled = reason or "cancel" end
 end
 
--- reason: "ok", "lost" (alvo sumiu), "stuck", "timeout", "error", "nochar",
---         "cancel" (usuário), "replace" (outro voo começou)
-local function stopFly(reason)
-    local f = flying
-    if not f then return end
-    flying = nil
-    cleanup(f)
-    reason = reason or "cancel"
-    if f.onDone then task.spawn(pcall, f.onDone, reason == "ok", reason) end
-    -- parou no meio do nada: leva pro chão
-    if not f.isLanding and reason ~= "ok" and reason ~= "replace" and reason ~= "nochar" then
-        task.spawn(function() safeLand() end)
-    end
+function Fly.isBusy()
+    return Fly.current ~= nil
 end
 
--- getTarget: devolve a posição alvo (Vector3) ou nil se o alvo sumiu.
--- ignore: instâncias que não contam como obstáculo (ex.: o próprio ovo).
-local function flyTo(getTarget, onDone, ignore, isLanding)
-    stopFly("replace")
-    local _, hrp = getChar()
-    if not hrp then return false end
-    local okT, firstGoal = pcall(getTarget)
-    if not okT or typeof(firstGoal) ~= "Vector3" then return false end
+local landing = false
 
-    local att = Instance.new("Attachment")
-    att.Name = "JFE_FlyAtt"
-    att.Parent = hrp
-    local lv = Instance.new("LinearVelocity")
-    lv.Name = "JFE_Fly"
-    lv.Attachment0 = att
-    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-    lv.RelativeTo = Enum.ActuatorRelativeTo.World
-    lv.MaxForce = math.huge
-    lv.VectorVelocity = Vector3.zero -- parado no ar enquanto calcula
-    lv.Parent = hrp
+-- Voa até getTarget() (Vector3 ou nil = alvo sumiu). Bloqueia até terminar.
+-- Devolve: chegou (bool), motivo ("ok", "lost", "stuck", "timeout", "nochar",
+-- "cancel", "replace", "error").
+function Fly.travel(getTarget, opts)
+    opts = opts or {}
+    Fly.cancel("replace")
+    Fly.release()
+    -- espera o voo anterior soltar o motor
+    local t0 = os.clock()
+    while Fly.current and os.clock() - t0 < 1 do task.wait() end
 
-    local f = {
-        alive = true, lv = lv, att = att, onDone = onDone, isLanding = isLanding,
-        wp = nil, idx = 1, tries = 0, mul = 1, moves = 0, ignore = ignore,
-    }
-    flying = f
-
+    local _, hrp, hum = getChar()
+    if not hrp then return false, "nochar" end
     local function target()
-        local ok, t = pcall(getTarget)
-        if ok and typeof(t) == "Vector3" then return t end
+        local ok, v = pcall(getTarget)
+        if ok and typeof(v) == "Vector3" then return v end
     end
+    local goal = target()
+    if not goal then return false, "lost" end
 
-    local function replan()
-        local _, h = getChar()
-        local goal = target()
-        if not h then return stopFly("nochar") end
-        if not goal then return stopFly("lost") end
-        f.wp = nil
-        setStatus("Calculando rota...", 130, 130, 130)
-        task.spawn(function()
-            local ok, wp = pcall(planWithFallback, h.Position, goal, ignore)
-            if not f.alive or flying ~= f then return end
-            if not ok or not wp then
-                log("erro na rota:", wp)
-                return stopFly("error")
+    local job = {}
+    Fly.current = job
+    local motor = makeMotor(hrp, hum)
+    local params = castParams(opts.ignore)
+    local result, reason = false, "error"
+
+    local ok, err = pcall(function()
+        local route = planRoute(hrp.Position, goal, params)
+        if not route then
+            -- reserva: sobe bem alto, vai reto e desce
+            local alt = math.max(hrp.Position.Y, goal.Y) + 200
+            route = { Vector3.new(hrp.Position.X, alt, hrp.Position.Z), Vector3.new(goal.X, alt, goal.Z), goal }
+            log("usando rota alta de reserva")
+        end
+        local idx, tries, moves = 1, 0, 0
+        local best, bestAt = math.huge, os.clock()
+        local total = 0
+        do local prev = hrp.Position for _, p in ipairs(route) do total = total + (p - prev).Magnitude prev = p end end
+        local deadline = os.clock() + total / math.max(config.flySpeed, 10) * 2.5 + 15
+        setStatus(("Voando (%d pontos)"):format(#route))
+
+        while true do
+            local dt = RunService.Heartbeat:Wait()
+            if job.cancelled then reason = job.cancelled return end
+            local _, h = getChar()
+            if not h or h ~= hrp or not motor.lv.Parent then reason = "nochar" return end
+            local g = target()
+            if not g then reason = "lost" return end
+            if os.clock() > deadline then reason = "timeout" return end
+
+            -- alvo andou: recalcula
+            if (g - goal).Magnitude > 8 then
+                moves = moves + 1
+                if moves > 6 then reason = "lost" return end
+                goal = g
+                motor.lv.VectorVelocity = Vector3.zero
+                route = planRoute(h.Position, goal, params) or { goal }
+                idx, best, bestAt = 1, math.huge, os.clock()
             end
-            local total, prev = 0, h.Position
-            for _, p in ipairs(wp) do total = total + (p - prev).Magnitude; prev = p end
-            f.wp, f.idx, f.goal = wp, 1, goal
-            f.best, f.bestAt, f.prevDist = nil, nil, nil
-            f.deadline = os.clock() + total / math.max(FLY.speed * f.mul, 20) * 2 + 15
-            setStatus(("Voando (%d pontos, vel. %d)"):format(#wp, math.floor(FLY.speed * f.mul)), 60, 200, 100)
-        end)
-    end
 
-    -- não andou / foi puxado de volta: menos velocidade e nova rota
-    local function struggle(why)
-        f.tries = f.tries + 1
-        f.mul = math.max(f.mul * 0.5, 40 / math.max(FLY.speed, 40))
-        log(("%s — tentativa %d, velocidade agora %d"):format(why, f.tries, math.floor(FLY.speed * f.mul)))
-        if f.tries > 6 then return stopFly("stuck") end
-        replan()
-    end
-
-    local function step(dt)
-        local _, h, hm = getChar()
-        if not h or h ~= hrp or not lv.Parent then return stopFly("nochar") end
-        local goal = target()
-        if not goal then return stopFly("lost") end
-        if not f.wp then
-            lv.VectorVelocity = Vector3.zero
-            return
-        end
-        if (goal - f.goal).Magnitude > 6 then
-            f.goal = goal
-            f.moves = f.moves + 1
-            if f.moves > 15 then return stopFly("lost") end
-            return replan()
-        end
-        if os.clock() > f.deadline then return stopFly("timeout") end
-
-        local p = f.wp[f.idx]
-        local delta = p - h.Position
-        local dist = delta.Magnitude
-        local last = f.idx == #f.wp
-        if dist <= (last and 2 or 4) then
-            if last then return stopFly("ok") end
-            f.idx = f.idx + 1
-            f.best, f.bestAt, f.prevDist = nil, nil, nil
-            return
-        end
-
-        local dir = delta.Unit
-        local spd = FLY.speed * f.mul
-        -- não passa do ponto neste frame
-        spd = math.min(spd, dist / math.max(dt, 1 / 240) * 0.8)
-        -- olha à frente e freia antes de bater
-        local look = math.min(dist, spd * dt * 4 + 6)
-        local okC, hit = pcall(function()
-            return workspace:Spherecast(h.Position, 2.5, dir * look, castParams(ignore))
-        end)
-        if okC and hit then
-            if hit.Distance < 2 then
-                lv.VectorVelocity = Vector3.zero
-                return struggle("obstáculo à frente")
+            local p = route[idx]
+            local delta = p - h.Position
+            local dist = delta.Magnitude
+            local last = idx == #route
+            if dist <= (last and 1.5 or 3) then
+                if last then result, reason = true, "ok" return end
+                idx = idx + 1
+                best, bestAt = math.huge, os.clock()
+            else
+                local spd = math.min(config.flySpeed, dist / math.max(dt, 1 / 240) * 0.85)
+                motor.lv.VectorVelocity = delta.Unit * spd
+                motor.face(delta)
+                if dist < best - 0.5 then
+                    best, bestAt = dist, os.clock()
+                elseif os.clock() - bestAt > 1.5 then
+                    tries = tries + 1
+                    log("voo travado, recalculando (" .. tries .. ")")
+                    if tries > 3 then reason = "stuck" return end
+                    motor.lv.VectorVelocity = Vector3.zero
+                    route = planRoute(h.Position + Vector3.new(0, 4, 0), goal, params) or { goal }
+                    idx, best, bestAt = 1, math.huge, os.clock()
+                end
             end
-            spd = math.min(spd, hit.Distance / math.max(dt, 1 / 240) * 0.4)
-        end
-        lv.VectorVelocity = dir * spd
-        if hm then hm:ChangeState(Enum.HumanoidStateType.Freefall) end
-
-        -- puxado de volta pelo servidor (distância aumentou de repente)
-        if f.prevDist and dist > f.prevDist + 12 then
-            f.prevDist = dist
-            return struggle("servidor puxou de volta")
-        end
-        f.prevDist = dist
-
-        -- sem progresso por 1,5s
-        local now = os.clock()
-        if not f.best or dist < f.best - 0.5 then
-            f.best, f.bestAt = dist, now
-        elseif now - f.bestAt > 1.5 then
-            f.best, f.bestAt = nil, nil
-            return struggle("sem progresso")
-        end
-    end
-
-    f.conn = RunService.Heartbeat:Connect(function(dt)
-        local ok, err = pcall(step, dt)
-        if not ok then
-            log("erro no voo:", err)
-            stopFly("error")
         end
     end)
-
-    replan()
-    return true
-end
-
--- Versão que espera: devolve (chegou, motivo).
-local function flyWait(getTarget, ignore)
-    local done, reached, reason = false, false, nil
-    if not flyTo(getTarget, function(r, why) done, reached, reason = true, r, why end, ignore) then
-        return false, "lost"
+    if not ok then
+        log("erro no voo:", err)
+        reason = "error"
     end
-    while not done do task.wait() end
-    return reached, reason
-end
 
--- Segura o personagem parado no ar (ex.: esperando o Grab). Devolve release().
-local function holdPosition()
-    local _, hrp = getChar()
-    if not hrp then return function() end end
-    local pos = hrp.Position
-    local att = Instance.new("Attachment")
-    att.Parent = hrp
-    local lv = Instance.new("LinearVelocity")
-    lv.Attachment0 = att
-    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-    lv.RelativeTo = Enum.ActuatorRelativeTo.World
-    lv.MaxForce = math.huge
-    lv.Parent = hrp
-    local conn = RunService.Heartbeat:Connect(function()
-        pcall(function()
-            -- nunca briga com o voo: desliga enquanto outro voo estiver ativo
-            lv.Enabled = flying == nil
-            local d = pos - hrp.Position
-            lv.VectorVelocity = d.Magnitude > 0.3 and d * 5 or Vector3.zero
-        end)
-    end)
-    return function()
-        pcall(function() conn:Disconnect() end)
-        pcall(function() lv:Destroy() end)
-        pcall(function() att:Destroy() end)
+    if Fly.current == job then Fly.current = nil end
+    if result and opts.hold then
+        motor.lv.VectorVelocity = Vector3.zero
+        Fly.holding = motor
+    else
+        motor.destroy()
     end
+    if not result and not opts.isLanding and reason ~= "replace" and reason ~= "nochar" then
+        task.spawn(function() Fly.landSafe() end)
+    end
+    return result, reason
 end
 
--- Leva o player pra ilha mais próxima (ou pro plot) se estiver no ar sem chão.
-safeLand = function()
-    if landing or flying then return end
+-- Se estiver no ar sem chão perto, pousa na ilha mais próxima (ou no plot).
+function Fly.landSafe()
+    if landing or Fly.current then return end
     local _, hrp, hum = getChar()
     if not hrp then return end
-    local okAir, air = pcall(inAirWithoutGround, hrp, hum)
-    if not okAir or not air then return end
+    if hum.FloorMaterial ~= Enum.Material.Air then return end
+    if groundBelow(hrp.Position, 30) then return end
     landing = true
-    local release = holdPosition() -- não cai enquanto procura
-    local okG, ground = pcall(findSafeGround, hrp.Position)
-    release()
-    if not okG or not ground then
-        landing = false
-        notify("Não achei chão perto. Voo liberado.", Color3.fromRGB(220, 60, 60))
-        return
-    end
-    setStatus("Levando você pra ilha mais próxima...", 220, 160, 60)
-    local started = flyTo(function() return ground end, function(ok, why)
-        if ok or why == "replace" then
-            landing = false
-            if ok then setStatus("Pousou em segurança.", 60, 200, 100) end
+    local ok, err = pcall(function()
+        local spot = nearestGround(hrp.Position)
+        if not spot then
+            notify("Não achei chão perto.", "err")
             return
         end
-        -- reserva: o próprio plot
-        local plotPos = plotLanding()
-        if plotPos and (plotPos - ground).Magnitude > 5 then
-            flyTo(function() return plotPos end, function() landing = false end, nil, true)
-        else
-            landing = false
+        setStatus("Pousando na ilha mais próxima...")
+        local reached, why = Fly.travel(function() return spot end, { isLanding = true })
+        if not reached and why ~= "replace" and why ~= "cancel" then
+            local plot = plotLanding()
+            if plot then Fly.travel(function() return plot end, { isLanding = true }) end
         end
-    end, nil, true)
-    if not started then landing = false end
+    end)
+    if not ok then log("erro no pouso:", err) end
+    landing = false
 end
 
-
-
-local toggles = {}
-local function makeToggle(key, label, y, enabled, onChange)
-    local btn = Instance.new("TextButton")
-    btn.Size, btn.Position = UDim2.new(1, -24, 0, 34), UDim2.new(0, 12, 0, y)
-    btn.BorderSizePixel, btn.AutoButtonColor = 0, false
-    btn.Font, btn.TextSize = Enum.Font.GothamBold, 12
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.Parent = frame
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    toggles[key] = false
-    local function paint()
-        if not enabled then
-            btn.Text = label .. ": remote não encontrada"
-            btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-            btn.TextColor3 = Color3.fromRGB(120, 120, 120)
-            return
-        end
-        btn.Text = label .. (toggles[key] and ": ON" or ": OFF")
-        TweenService:Create(btn, TweenInfo.new(0.12), {
-            BackgroundColor3 = toggles[key] and Color3.fromRGB(30, 140, 60) or Color3.fromRGB(170, 20, 20)
-        }):Play()
+function Fly.stop()
+    Fly.cancel("cancel")
+    if Fly.holding then
+        Fly.release()
+        task.spawn(Fly.landSafe)
     end
-    btn.MouseButton1Click:Connect(safe("toggle " .. key, function()
-        if not enabled then return end
-        toggles[key] = not toggles[key]
-        paint()
-        if onChange then onChange(toggles[key]) end
-    end))
-    paint()
 end
-
-makeToggle("egg",      "Auto colocar ovo",       132, eggRemote ~= nil)
-makeToggle("brainrot", "Auto colocar brainrot",  172, brainRemote ~= nil)
--- ESP e Hub são criados mais abaixo; os toggles só ligam/desligam.
-local onEspToggle, onHubToggle
-makeToggle("esp",      "ESP Eggs",               252, true, function(v) if onEspToggle then onEspToggle(v) end end)
-makeToggle("hub",      "Hub de Eggs",            292, true, function(v) if onHubToggle then onHubToggle(v) end end)
-
--- Velocidade do fly
-local speedLbl = Instance.new("TextLabel")
-speedLbl.Size, speedLbl.Position = UDim2.new(0.55, -12, 0, 34), UDim2.new(0, 12, 0, 332)
-speedLbl.BackgroundTransparency = 1
-speedLbl.Text = "Velocidade do fly"
-speedLbl.TextColor3 = Color3.fromRGB(160, 160, 160)
-speedLbl.Font, speedLbl.TextSize = Enum.Font.Gotham, 12
-speedLbl.TextXAlignment = Enum.TextXAlignment.Left
-speedLbl.Parent = frame
-local speedBox = Instance.new("TextBox")
-speedBox.Size, speedBox.Position = UDim2.new(0.45, -12, 0, 34), UDim2.new(0.55, 0, 0, 332)
-speedBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-speedBox.BorderSizePixel = 0
-speedBox.Text = tostring(FLY.speed)
-speedBox.TextColor3 = Color3.fromRGB(230, 230, 230)
-speedBox.Font, speedBox.TextSize = Enum.Font.GothamBold, 13
-speedBox.ClearTextOnFocus = false
-speedBox.Parent = frame
-Instance.new("UICorner", speedBox).CornerRadius = UDim.new(0, 6)
-speedBox.FocusLost:Connect(function()
-    local n = tonumber(speedBox.Text)
-    if n then FLY.speed = math.clamp(n, 10, 999) end
-    speedBox.Text = tostring(FLY.speed)
-end)
-
--- ─── LOOPS ────────────────────────────────────────────────────────────────────
-local alive = true
-local autoCollect, currentJob, cancelJob, startEggJob -- definidos no Hub
-local conns = {}
-local mainWindow -- janela principal (V3nt UI)
-local function shutdown()
-    alive = false
-    pcall(function() if cancelJob then cancelJob() else stopFly("cancel") end end)
-    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    pcall(function() sg:Destroy() end)
-    if mainWindow then pcall(function() mainWindow:Destroy() end) end
-end
-closeBtn.MouseButton1Click:Connect(shutdown)
-
--- Ovo / brainrot: checa a cada 1s.
-task.spawn(function()
-    while alive do
-        task.wait(1)
-        if not alive then break end
-
-        -- Ovo: só se carregando (CarryingJumpEgg, linha 1004) e no próprio plot.
-        if toggles.egg and eggRemote and LP:GetAttribute("CarryingJumpEgg") == true and onOwnPlot() then
-            eggRemote:FireServer()
-            log("RequestEggPlace")
-            setStatus("Ovo colocado.", 60, 200, 100)
-        end
-
-        -- Brainrot: só se carregando (CarryingBaseBrainrot, linha 1069) e no
-        -- próprio plot (o botão do jogo só fica ativo assim, linha 1083).
-        if toggles.brainrot and brainRemote and LP:GetAttribute("CarryingBaseBrainrot") == true and onOwnPlot() then
-            brainRemote:FireServer()
-            log("RequestBrainrotPlace")
-            setStatus("Brainrot colocado.", 60, 200, 100)
-        end
-
-    end
-end)
 
 -- ═══ EGGS: ESP + HUB ═════════════════════════════════════════════════════════
 -- Só leitura (nada é enviado ao servidor). Fontes no dump:
@@ -1149,63 +1351,82 @@ local function makeEsp(e)
     return { hl = hl, bb = bb, label = t }
 end
 
--- ─── HUB ─────────────────────────────────────────────────────────────────────
-local hub = Instance.new("Frame")
-hub.Name = "EggHub"
-hub.Size = UDim2.new(0, 460, 0, 520)
-hub.Position = UDim2.new(1, -480, 0.5, -260)
-hub.BackgroundColor3 = Color3.fromRGB(14, 14, 19)
-hub.BorderSizePixel = 0
-hub.Active, hub.Draggable = true, true
-hub.Visible = false
-hub.Parent = sg
-Instance.new("UICorner", hub).CornerRadius = UDim.new(0, 12)
-local hubStroke = Instance.new("UIStroke", hub)
-hubStroke.Color, hubStroke.Thickness = Color3.fromRGB(255, 59, 92), 1.5
+-- ═══ HUB DE OVOS ═════════════════════════════════════════════════════════════
+local U, TH = V3ntUI.util, V3ntUI.Theme
+local new, corner, outline, tween, text = U.new, U.corner, U.outline, U.tween, U.text
 
-local hubTitle = Instance.new("TextLabel")
-hubTitle.Size = UDim2.new(1, -190, 0, 36)
-hubTitle.Position = UDim2.new(0, 12, 0, 4)
-hubTitle.BackgroundTransparency = 1
-hubTitle.Font, hubTitle.TextSize = Enum.Font.GothamBold, 14
-hubTitle.TextColor3 = Color3.fromRGB(220, 220, 220)
-hubTitle.TextXAlignment = Enum.TextXAlignment.Left
-hubTitle.Text = "Eggs no servidor"
-hubTitle.Parent = hub
-
-hubTitle.TextScaled = true
-local autoBtn = Instance.new("TextButton")
-autoBtn.Size = UDim2.new(0, 166, 0, 28)
-autoBtn.Position = UDim2.new(1, -174, 0, 8)
-autoBtn.BorderSizePixel = 0
-autoBtn.Font, autoBtn.TextSize = Enum.Font.GothamBold, 10
-autoBtn.TextColor3 = Color3.new(1, 1, 1)
-autoBtn.Parent = hub
-Instance.new("UICorner", autoBtn).CornerRadius = UDim.new(0, 6)
-local function paintAuto()
-    autoBtn.Text = "FLY COLETAR + COLOCAR: " .. (autoCollect and "ON" or "OFF")
-    autoBtn.BackgroundColor3 = autoCollect and Color3.fromRGB(46, 160, 90) or Color3.fromRGB(176, 22, 64)
+local hubGui = newProtectedGui("V3ntJumpForEggHub")
+local hubScale = new("UIScale", { Scale = 1 }, hubGui)
+local function rescaleHub()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    hubScale.Scale = math.clamp(math.min(vp.X / 900, vp.Y / 620), 0.55, 1)
 end
-autoBtn.MouseButton1Click:Connect(function()
-    autoCollect = not autoCollect
-    paintAuto()
-end)
+rescaleHub()
+pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescaleHub) end)
 
-local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -16, 1, -48)
-scroll.Position = UDim2.new(0, 8, 0, 42)
-scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 5
-scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 59, 92)
-scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scroll.CanvasSize = UDim2.new()
-scroll.Parent = hub
-local layout = Instance.new("UIListLayout", scroll)
-layout.Padding = UDim.new(0, 8)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
+local hub = new("Frame", { Name = "EggHub", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -20, 0.5, 0),
+    Size = UDim2.fromOffset(420, 540), BackgroundColor3 = TH.bg, BorderSizePixel = 0, Visible = false,
+    Active = true, ClipsDescendants = true }, hubGui)
+corner(hub, 14)
+outline(hub, TH.stroke, 1)
 
--- Cópia visual do model pro ViewportFrame (sem scripts, prompts e GUIs).
+local hubTop = new("Frame", { Size = UDim2.new(1, 0, 0, 54), BackgroundColor3 = TH.panel, BorderSizePixel = 0,
+    Active = true }, hub)
+do
+    local line = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
+        BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, hubTop)
+    U.accentGradient(line)
+end
+text(hubTop, { Position = UDim2.fromOffset(16, 8), Size = UDim2.new(1, -70, 0, 20), Text = "Ovos no servidor",
+    FontFace = U.FONT_HEAVY, TextSize = 15 })
+local hubSub = text(hubTop, { Position = UDim2.fromOffset(16, 28), Size = UDim2.new(1, -70, 0, 16),
+    Text = "carregando...", TextColor3 = TH.sub, TextSize = 11 })
+local hubClose = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, -1),
+    Size = UDim2.fromOffset(30, 30), BackgroundColor3 = TH.card, AutoButtonColor = false, Text = "×",
+    FontFace = U.FONT_BOLD, TextSize = 18, TextColor3 = TH.sub, BorderSizePixel = 0 }, hubTop)
+corner(hubClose, 15)
+U.draggable(hubTop, hub)
+
+local hubList = new("ScrollingFrame", { Position = UDim2.fromOffset(0, 54), Size = UDim2.new(1, 0, 1, -54),
+    BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = TH.accent,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y }, hub)
+new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }, hubList)
+new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12),
+    PaddingRight = UDim.new(0, 14) }, hubList)
+local emptyLabel = text(hubList, { Size = UDim2.new(1, 0, 0, 60), Text = "Nenhum ovo no servidor agora.",
+    TextColor3 = TH.sub, TextXAlignment = Enum.TextXAlignment.Center, LayoutOrder = -1 })
+
+local function pillButton(parent, label, primary, props)
+    local b = new("TextButton", { BackgroundColor3 = primary and Color3.new(1, 1, 1) or TH.cardHover,
+        AutoButtonColor = false, Text = label, FontFace = U.FONT_BOLD, TextSize = 12,
+        TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, parent)
+    for k, v in pairs(props or {}) do b[k] = v end
+    corner(b, 8)
+    if primary then U.accentGradient(b, 90) else outline(b, TH.stroke, 1) end
+    local sc = new("UIScale", { Scale = 1 }, b)
+    b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.95 }) end)
+    b.MouseButton1Up:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
+    b.MouseLeave:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
+    return b
+end
+
+local function chip(parent, order)
+    local c = new("Frame", { Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = TH.panel, BorderSizePixel = 0, LayoutOrder = order }, parent)
+    corner(c, 11)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, c)
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center,
+        Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, c)
+    local icon = new("ImageLabel", { Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, Visible = false,
+        LayoutOrder = 1 }, c)
+    local label = text(c, { Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, TextSize = 11,
+        FontFace = U.FONT_BOLD, TextWrapped = false, LayoutOrder = 2 })
+    return c, label, icon
+end
+
+-- Cópia visual do model pro preview 3D (sem scripts, prompts, GUIs).
 local function cloneForPreview(model)
     local oldArch = model.Archivable
     model.Archivable = true
@@ -1223,39 +1444,19 @@ local function cloneForPreview(model)
     return c
 end
 
--- ─── VOAR / COLETAR + COLOCAR ────────────────────────────────────────────────
-autoCollect = false
-currentJob = nil
-
-local function resetButton(j)
-    if j and j.button then pcall(function() if j.button.Parent then j.button.Text = "VOAR" end end) end
-end
-
--- land=false quando outro job vai começar logo em seguida.
-function cancelJob(land)
-    local j = currentJob
-    currentJob = nil
-    if j then
-        j.cancelled = true
-        if j.release then pcall(j.release) end
-        resetButton(j)
-    end
-    local wasFlying = flying ~= nil
-    stopFly(land == false and "replace" or "cancel")
-    -- estava parado no ar (SOLTAR / pegando ovo): leva pro chão
-    if land ~= false and not wasFlying then task.spawn(safeLand) end
-end
-
-paintAuto()
-
+-- ─── VOAR / COLETAR ──────────────────────────────────────────────────────────
 local HIDDEN_POS = Vector3.new(10000, 10000, 10000)
+local REASON_TEXT = {
+    lost = "o ovo sumiu", stuck = "travou no caminho", timeout = "demorou demais", error = "erro no voo",
+    nochar = "personagem não encontrado", cancel = "cancelado", replace = "outro voo começou",
+}
+local currentJob
 
 local function eggTarget(model)
     return function()
         if not model.Parent or not model:IsDescendantOf(workspace) then return nil end
         local p = model:GetPivot().Position
-        -- Ovo pego por alguém vai pra exatamente (10000, 10000, 10000)
-        -- (WorldBrainrotController:111). Ovos da pista ficam bem alto (Y ~6500).
+        -- ovo pego por alguém vai pra (10000, 10000, 10000) (WorldBrainrotController:111)
         if (p - HIDDEN_POS).Magnitude < 5 then return nil end
         return p + Vector3.new(0, 4, 0)
     end
@@ -1270,271 +1471,306 @@ local function waitAttr(name, value, timeout)
     return LP:GetAttribute(name) == value
 end
 
-local REASON_TEXT = {
-    lost = "o alvo sumiu", stuck = "travou no caminho", timeout = "demorou demais",
-    error = "erro no voo", nochar = "personagem não encontrado", cancel = "cancelado",
-}
+local function cancelJob()
+    local j = currentJob
+    currentJob = nil
+    if j then j.cancelled = true; j.reset() end
+    Fly.stop()
+end
 
-function startEggJob(e, card, button)
-    cancelJob(false)
-    local job = { card = card, button = button }
+local function startEggJob(e, ui, mode)
+    if currentJob then
+        local same = currentJob.ui == ui and currentJob.mode == mode
+        cancelJob()
+        if same then return end -- clicar de novo = parar
+    end
+    local btn = mode == "collect" and ui.collectBtn or ui.flyBtn
+    local original = btn.Text
+    local job = { ui = ui, mode = mode, cancelled = false }
+    job.reset = function() pcall(function() btn.Text = original end) end
     currentJob = job
-    button.Text = "PARAR"
+    btn.Text = "Parar"
     local function alive() return currentJob == job and not job.cancelled end
-    local eggName = tostring(e.index or "Egg")
-
-    local function finish(msg, ok, land)
-        if job.release then pcall(job.release); job.release = nil end
+    local function finish(msg, kind)
         if currentJob == job then currentJob = nil end
-        resetButton(job)
-        if msg then setStatus(msg, ok and 60 or 220, ok and 200 or 60, ok and 100 or 60) end
-        if land then task.spawn(safeLand) end
+        job.reset()
+        if msg then setStatus(msg) end
+        if kind then notify(msg, kind, 5) end
     end
-
-    local function run()
-        local model = e.model
-        local tgt = eggTarget(model)
-        if not tgt() then
-            notify("" .. eggName .. " sumiu ou foi pego por alguém.", Color3.fromRGB(220, 60, 60))
-            return finish("Ovo indisponível.", false, false)
-        end
-
-        setStatus("Voando até o ovo...", 130, 130, 130)
-        local reached, why = flyWait(tgt, { model })
-        if not alive() then return end
-        if not reached then
-            if why == "lost" then
-                notify("" .. eggName .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.",
-                    Color3.fromRGB(220, 60, 60))
-            end
-            -- stopFly já chama safeLand quando para no ar
-            return finish("Não chegou no ovo: " .. (REASON_TEXT[why] or tostring(why)) .. ".", false, false)
-        end
-
-        -- Só voar: se não tiver chão, fica parado no ar até apertar SOLTAR
-        if not (autoCollect and e.kind == "Mapa" and e.id ~= nil) then
-            local _, hrp, hum = getChar()
-            if hrp and inAirWithoutGround(hrp, hum) then
-                job.release = holdPosition()
-                button.Text = "SOLTAR"
-                setStatus("Chegou no ovo (parado no ar). SOLTAR leva você pro chão.", 60, 200, 100)
-                return -- o job continua ativo até SOLTAR/PARAR (cancelJob → safeLand)
-            end
-            return finish("Chegou no ovo.", true, false)
-        end
-
-        -- Pegar: mesmas condições do prompt do jogo
-        -- (HoldDuration 1.25s e MaxActivationDistance 10, JumpLTMController:1248)
-        if not grabRemote then return finish("Remote Grab não encontrada.", false, true) end
-        if LP:GetAttribute("CarryingJumpEgg") ~= true then
-            setStatus("Pegando o ovo...", 130, 130, 130)
-            job.release = holdPosition() -- não cai enquanto segura o prompt
-            task.wait(1.3)
-            if not alive() then return end
-            if not tgt() then
-                notify("" .. eggName .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.",
-                    Color3.fromRGB(220, 60, 60))
-                return finish("O ovo sumiu.", false, true)
-            end
-            local _, hrp = getChar()
-            if not (hrp and (model:GetPivot().Position - hrp.Position).Magnitude <= 10) then
-                return finish("Longe demais do ovo pra pegar.", false, true)
-            end
-            grabRemote:FireServer("JumpLTM/Eggs", e.id)
-            log("Grab", e.id)
-            local got = waitAttr("CarryingJumpEgg", true, 3)
-            if job.release then job.release(); job.release = nil end
-            if not alive() then return end
-            if not got then return finish("Não conseguiu pegar o ovo.", false, true) end
-        end
-
-        -- Levar pro meu plot
-        if not plotLanding() then return finish("Plot não encontrado.", false, true) end
-        setStatus("Levando o ovo pro plot...", 130, 130, 130)
-        reached, why = flyWait(plotLanding, {})
-        if not alive() then return end
-        if not reached then
-            return finish("Não chegou no plot: " .. (REASON_TEXT[why] or tostring(why)) .. ".", false, false)
-        end
-
-        -- Colocar: mesma chamada do botão ButtonX do jogo (linha 1021)
-        task.wait(0.3)
-        if not onOwnPlot() then return finish("Não está em cima do plot.", false, true) end
-        if not eggRemote then return finish("Remote RequestEggPlace não encontrada.", false, false) end
-        eggRemote:FireServer()
-        log("RequestEggPlace")
-        if waitAttr("CarryingJumpEgg", false, 3) then
-            notify("" .. eggName .. " colocado no seu plot!", Color3.fromRGB(60, 200, 100), 5)
-            finish("Ovo colocado no plot!", true, false)
-        else
-            finish("Servidor não colocou o ovo (plot cheio?).", false, false)
-        end
-    end
+    local name = tostring(e.displayName or e.index or "Ovo")
 
     task.spawn(function()
-        local ok, err = pcall(run)
+        local ok, err = pcall(function()
+            local model = e.model
+            local tgt = eggTarget(model)
+            if not tgt() then
+                notify(name .. " sumiu ou foi pego por alguém.", "err")
+                return finish("Ovo indisponível.")
+            end
+            setStatus("Voando até " .. name .. "...")
+            local reached, why = Fly.travel(tgt, { ignore = { model }, hold = true })
+            if not alive() then Fly.release() return end
+            if not reached then
+                if why == "lost" then
+                    notify(name .. " sumiu enquanto você ia até ele. Levando você pra ilha mais próxima.", "err")
+                end
+                return finish("Não chegou no ovo: " .. (REASON_TEXT[why] or tostring(why)) .. ".")
+            end
+
+            if mode == "fly" then
+                local _, hrp = getChar()
+                local ground = hrp and workspace:Raycast(hrp.Position, Vector3.new(0, -10, 0), (function()
+                    local p = RaycastParams.new()
+                    p.FilterType = Enum.RaycastFilterType.Exclude
+                    p.FilterDescendantsInstances = { LP.Character }
+                    return p
+                end)())
+                if ground then
+                    Fly.release()
+                    return finish("Chegou em " .. name .. ".")
+                end
+                -- sem chão: fica parado no ar até clicar em "Soltar"
+                btn.Text = "Soltar"
+                setStatus("Parado no ar ao lado do ovo. \"Soltar\" leva você pro chão.")
+                return
+            end
+
+            -- Coletar: mesmas regras do prompt "Grab" do jogo (segura 1,25s, até 10 studs)
+            if LP:GetAttribute("CarryingJumpEgg") ~= true then
+                if not grabRemote then Fly.release() return finish("Remote Grab não encontrada.", "err") end
+                setStatus("Pegando " .. name .. "...")
+                task.wait(1.3)
+                if not alive() then Fly.release() return end
+                local _, hrp = getChar()
+                if not tgt() then
+                    Fly.release()
+                    notify(name .. " sumiu antes de você pegar. Levando você pra ilha mais próxima.", "err")
+                    task.spawn(Fly.landSafe)
+                    return finish("O ovo sumiu.")
+                end
+                if not (hrp and (model:GetPivot().Position - hrp.Position).Magnitude <= 10) then
+                    Fly.release()
+                    task.spawn(Fly.landSafe)
+                    return finish("Longe demais pra pegar.", "err")
+                end
+                grabRemote:FireServer("JumpLTM/Eggs", e.id)
+                log("Grab", e.id)
+                if not waitAttr("CarryingJumpEgg", true, 3) then
+                    Fly.release()
+                    task.spawn(Fly.landSafe)
+                    return finish("Não conseguiu pegar o ovo.", "err")
+                end
+            end
+            if not alive() then Fly.release() return end
+
+            -- Levar pro plot
+            if not plotLanding() then Fly.release() return finish("Seu plot não foi encontrado.", "err") end
+            setStatus("Levando " .. name .. " pro seu plot...")
+            reached, why = Fly.travel(plotLanding, {})
+            if not alive() then return end
+            if not reached then
+                return finish("Não chegou no plot: " .. (REASON_TEXT[why] or tostring(why)) .. ".", "err")
+            end
+            -- espera encostar no chão do plot
+            local t0 = os.clock()
+            local _, _, hum = getChar()
+            while hum and hum.FloorMaterial == Enum.Material.Air and os.clock() - t0 < 1.5 do task.wait() end
+            if not onOwnPlot() then return finish("Não ficou em cima do plot.", "err") end
+            if not eggRemote then return finish("Remote RequestEggPlace não encontrada.", "err") end
+            eggRemote:FireServer() -- mesma chamada do botão do jogo (JumpLTMController:1021)
+            log("RequestEggPlace")
+            if waitAttr("CarryingJumpEgg", false, 3) then
+                finish(name .. " colocado no seu plot!", "ok")
+            else
+                finish("O servidor não colocou o ovo (plot cheio?).", "warn")
+            end
+        end)
         if not ok then
-            log("erro no job:", err)
-            notify("Erro no voo/coleta (veja F9). Levando você pro chão.", Color3.fromRGB(220, 60, 60))
-            if flying then stopFly("error") end
-            finish("Erro: " .. tostring(err), false, true)
+            log("erro no voo/coleta:", err)
+            Fly.release()
+            task.spawn(Fly.landSafe)
+            finish("Erro no voo/coleta (veja F9).", "err")
         end
     end)
 end
 
+-- ─── CARD ────────────────────────────────────────────────────────────────────
 local function makeCard(e)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, -8, 0, 0)
-    card.AutomaticSize = Enum.AutomaticSize.Y
-    card.BackgroundColor3 = Color3.fromRGB(27, 27, 36)
-    card.BorderSizePixel = 0
-    card.Parent = scroll
-    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-    local cs = Instance.new("UIStroke", card)
-    cs.Thickness = 1
-    local minH = Instance.new("UISizeConstraint", card)
-    minH.MinSize = Vector2.new(0, 210)
+    local card = new("Frame", { Size = UDim2.new(1, 0, 0, 172), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = TH.card, BorderSizePixel = 0 }, hubList)
+    corner(card, 12)
+    local cs = outline(card, TH.stroke, 1, 0.2)
 
-    -- Preview 3D à esquerda
-    local vp = Instance.new("ViewportFrame")
-    vp.Size = UDim2.new(0, 140, 0, 140)
-    vp.Position = UDim2.new(0, 8, 0, 8)
-    vp.BackgroundColor3 = Color3.fromRGB(20, 20, 27)
-    vp.BorderSizePixel = 0
-    vp.Ambient = Color3.fromRGB(200, 200, 200)
-    vp.LightColor = Color3.fromRGB(255, 255, 255)
-    vp.Parent = card
-    Instance.new("UICorner", vp).CornerRadius = UDim.new(0, 6)
-    local cam = Instance.new("Camera")
-    cam.FieldOfView = 40
-    cam.Parent = vp
+    local vp = new("ViewportFrame", { Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(116, 116),
+        BackgroundColor3 = TH.panel, BorderSizePixel = 0, Ambient = Color3.fromRGB(200, 200, 200),
+        LightColor = Color3.new(1, 1, 1) }, card)
+    corner(vp, 10)
+    local cam = new("Camera", { FieldOfView = 40 }, vp)
     vp.CurrentCamera = cam
-    local world = Instance.new("WorldModel", vp)
-    local copy = cloneForPreview(e.model)
+    local world = new("WorldModel", {}, vp)
     local center, radius = Vector3.zero, 5
+    local copy = cloneForPreview(e.model)
     if copy then
         copy.Parent = world
         local cf, size = copy:GetBoundingBox()
         center, radius = cf.Position, math.max(size.Magnitude / 2, 1)
     end
 
-    -- TP até o ovo
-    local tp = Instance.new("TextButton")
-    tp.Size = UDim2.new(0, 140, 0, 22)
-    tp.Position = UDim2.new(0, 8, 0, 152)
-    tp.BackgroundColor3 = Color3.fromRGB(176, 22, 64)
-    tp.BorderSizePixel = 0
-    tp.Font, tp.TextSize = Enum.Font.GothamBold, 11
-    tp.TextColor3 = Color3.new(1, 1, 1)
-    tp.Text = "VOAR"
-    tp.Parent = card
-    Instance.new("UICorner", tp).CornerRadius = UDim.new(0, 5)
-    tp.MouseButton1Click:Connect(safe("botão voar", function()
-        if currentJob and currentJob.card == card then
-            cancelJob()
-            return
+    local name = text(card, { Position = UDim2.fromOffset(138, 10), Size = UDim2.new(1, -150, 0, 20),
+        FontFace = U.FONT_HEAVY, TextSize = 15, TextWrapped = false, TextTruncate = Enum.TextTruncate.AtEnd })
+
+    local chips = new("Frame", { Position = UDim2.fromOffset(138, 36), Size = UDim2.new(1, -150, 0, 22),
+        BackgroundTransparency = 1 }, card)
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder }, chips)
+    local rarityChip, rarityLabel = chip(chips, 1)
+    local mutChip, mutLabel, mutIcon = chip(chips, 2)
+    local timeChip, timeLabel = chip(chips, 3)
+
+    local traitsRow = new("Frame", { Position = UDim2.fromOffset(138, 64), Size = UDim2.new(1, -150, 0, 20),
+        BackgroundTransparency = 1 }, card)
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, traitsRow)
+    local traitIcons = {}
+    for i, t in ipairs(e.traits) do
+        local img = traitIcon(t)
+        if img and i <= 6 then
+            table.insert(traitIcons, new("ImageLabel", { Size = UDim2.fromOffset(20, 20), BackgroundTransparency = 1,
+                Image = tostring(img), LayoutOrder = i }, traitsRow))
         end
-        startEggJob(e, card, tp)
-    end))
-
-    -- Informações à direita
-    local info = Instance.new("TextLabel")
-    info.Size = UDim2.new(1, -168, 0, 0)
-    info.Position = UDim2.new(0, 158, 0, 8)
-    info.AutomaticSize = Enum.AutomaticSize.Y
-    info.BackgroundTransparency = 1
-    info.RichText = true
-    info.TextWrapped = true
-    info.TextXAlignment = Enum.TextXAlignment.Left
-    info.TextYAlignment = Enum.TextYAlignment.Top
-    info.Font = Enum.Font.Gotham
-    info.TextSize = 12
-    info.TextColor3 = Color3.fromRGB(225, 225, 225)
-    info.Parent = card
-    local pad = Instance.new("UIPadding", info)
-    pad.PaddingBottom = UDim.new(0, 8)
-
-    -- Ícones reais dos traits (Datas.Traits[x].Icon) e da mutação
-    local icons = Instance.new("Frame")
-    icons.Size = UDim2.new(0, 140, 0, 22)
-    icons.Position = UDim2.new(0, 8, 0, 178)
-    icons.BackgroundTransparency = 1
-    icons.Parent = card
-    local il = Instance.new("UIListLayout", icons)
-    il.FillDirection = Enum.FillDirection.Horizontal
-    il.Padding = UDim.new(0, 3)
-    local function addIcon(img)
-        if not img then return end
-        local i = Instance.new("ImageLabel")
-        i.Size = UDim2.new(0, 22, 0, 22)
-        i.BackgroundTransparency = 1
-        i.Image = tostring(img)
-        i.Parent = icons
     end
-    addIcon(mutationIcon(e.mutation))
-    for _, t in ipairs(e.traits) do addIcon(traitIcon(t)) end
+    local traitsText = text(traitsRow, { Size = UDim2.new(1, -#traitIcons * 24, 1, 0), TextSize = 11,
+        TextColor3 = TH.sub, TextWrapped = false, TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = 99 })
 
-    return {
-        card = card, cam = cam, center = center, radius = radius,
-        info = info, stroke = cs, angle = math.random() * math.pi * 2,
-    }
+    local line1 = text(card, { Position = UDim2.fromOffset(138, 88), Size = UDim2.new(1, -150, 0, 16),
+        TextSize = 11, TextColor3 = TH.sub, TextWrapped = false, TextTruncate = Enum.TextTruncate.AtEnd })
+    local line2 = text(card, { Position = UDim2.fromOffset(138, 106), Size = UDim2.new(1, -150, 0, 16),
+        TextSize = 11, TextColor3 = TH.sub, TextWrapped = false, TextTruncate = Enum.TextTruncate.AtEnd })
+
+    -- botões
+    local isMap = e.kind == "Mapa" and e.id ~= nil
+    local ui = { card = card, cam = cam, center = center, radius = radius, angle = math.random() * math.pi * 2 }
+    ui.flyBtn = pillButton(card, "Voar", false, { Position = UDim2.fromOffset(10, 134),
+        Size = UDim2.fromOffset(116, 28) })
+    ui.collectBtn = pillButton(card, isMap and "Coletar" or "Só no mapa", isMap, { Position = UDim2.fromOffset(138, 134),
+        Size = UDim2.new(0.5, -82, 0, 28), AutoButtonColor = false })
+    local moreBtn = pillButton(card, "Detalhes", false, { AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 134), Size = UDim2.new(0.5, -82, 0, 28) })
+    if not isMap then ui.collectBtn.TextColor3 = TH.sub end
+
+    local details = text(card, { Position = UDim2.fromOffset(12, 172), Size = UDim2.new(1, -24, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, TextSize = 11, TextColor3 = TH.sub, Visible = false,
+        TextYAlignment = Enum.TextYAlignment.Top })
+    new("UIPadding", { PaddingBottom = UDim.new(0, 12) }, details)
+
+    ui.flyBtn.Activated:Connect(safe("voar", function() startEggJob(ui.e, ui, "fly") end))
+    ui.collectBtn.Activated:Connect(safe("coletar", function()
+        if isMap then startEggJob(ui.e, ui, "collect") end
+    end))
+    moreBtn.Activated:Connect(function()
+        details.Visible = not details.Visible
+        moreBtn.Text = details.Visible and "Fechar" or "Detalhes"
+    end)
+
+    function ui.update(ev, hrp)
+        ui.e = ev
+        local full, _, rcolor, timerTxt, dist = eggInfo(ev, hrp)
+        local a = type(ev.index) == "string" and AnimalsData[ev.index] or nil
+        ev.displayName = a and a.DisplayName or ev.index
+        name.Text = esc(ev.displayName or "Ovo")
+        name.TextColor3 = rcolor
+        cs.Color = rcolor
+        -- raridade
+        local rarity = a and a.Rarity or (ev.overhead and ev.overhead.rarity)
+        rarityChip.Visible = rarity ~= nil
+        rarityLabel.Text = tostring(rarity or "")
+        rarityLabel.TextColor3 = rcolor
+        -- mutação
+        mutChip.Visible = ev.mutation ~= nil
+        if ev.mutation then
+            mutLabel.Text = mutationRich(ev.mutation) or tostring(ev.mutation)
+            local ic = mutationIcon(ev.mutation)
+            mutIcon.Visible = ic ~= nil
+            if ic then mutIcon.Image = tostring(ic) end
+        end
+        -- tempo
+        timeChip.Visible = timerTxt ~= nil
+        timeLabel.Text = timerTxt and ("Choca " .. esc(timerTxt)) or ""
+        -- traits
+        local names = {}
+        for _, t in ipairs(ev.traits) do table.insert(names, traitRich(t)) end
+        traitsText.Text = #names > 0 and table.concat(names, ", ") or "Sem traits"
+        -- linhas
+        local where = ev.kind == "Plot" and ("Plot de " .. esc(ev.owner))
+            or (ev.grabbed and '<font color="#FF5566">Pego por alguém</font>' or "No mapa · livre")
+        line1.Text = where .. (dist and ("  ·  %.0f studs"):format(dist) or "")
+        local hatch = ""
+        if a and type(a.Egg) == "table" and type(a.Egg.Animals) == "table" then
+            local out = {}
+            for _, x in ipairs(a.Egg.Animals) do
+                if type(x) == "table" and x.Name then
+                    local ad = AnimalsData[x.Name]
+                    table.insert(out, esc(ad and ad.DisplayName or x.Name) .. " " .. tostring(x.Chance or "?") .. "%")
+                end
+            end
+            hatch = table.concat(out, ", ")
+        end
+        line2.Text = hatch ~= "" and ("Choca: " .. hatch) or ""
+        if details.Visible then details.Text = full end
+        details.Text = full
+        card.LayoutOrder = math.floor(dist or 99999)
+    end
+    return ui
 end
 
--- ─── LOOP ────────────────────────────────────────────────────────────────────
-local entries = {} -- [model] = { e, esp, ui }
+-- ─── REFRESH (ESP + HUB) ─────────────────────────────────────────────────────
+local entries = {}
 
-local function clearEntry(model)
-    local ent = entries[model]
+local function clearEntry(key)
+    local ent = entries[key]
     if not ent then return end
-    if ent.esp then ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end
-    if ent.ui then ent.ui.card:Destroy() end
-    entries[model] = nil
+    if ent.esp then pcall(function() ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end) end
+    if ent.ui then pcall(function() ent.ui.card:Destroy() end) end
+    entries[key] = nil
 end
 
 local function refresh()
     local _, hrp = getChar()
     local list = collectEggs()
     local seen = {}
+    local plots, mapa = 0, 0
     for _, e in ipairs(list) do
         seen[e.key] = true
+        if e.kind == "Plot" then plots = plots + 1 else mapa = mapa + 1 end
         local ent = entries[e.key]
-        if not ent then
-            ent = {}
-            entries[e.key] = ent
-        end
-        ent.e = e
-        local text, short, rcolor, timerTxt, dist = eggInfo(e, hrp)
+        if not ent then ent = {}; entries[e.key] = ent end
+        local _, short, rcolor, timerTxt, dist = eggInfo(e, hrp)
 
         if toggles.esp then
             ent.esp = ent.esp or makeEsp(e)
             ent.esp.hl.FillColor = rcolor
             ent.esp.hl.OutlineColor = rcolor
             ent.esp.label.Text = ("%s\n%s%s"):format(short,
-                timerTxt and (esc(timerTxt) .. "  ") or "",
-                dist and ("%.0f studs"):format(dist) or "")
+                timerTxt and (esc(timerTxt) .. "  ") or "", dist and ("%.0f studs"):format(dist) or "")
         elseif ent.esp then
-            ent.esp.hl:Destroy(); ent.esp.bb:Destroy(); ent.esp = nil
+            pcall(function() ent.esp.hl:Destroy(); ent.esp.bb:Destroy() end)
+            ent.esp = nil
         end
 
         if toggles.hub then
             ent.ui = ent.ui or makeCard(e)
-            ent.ui.info.Text = text
-            ent.ui.stroke.Color = rcolor
-            ent.ui.card.LayoutOrder = math.floor(dist or 99999)
+            ent.ui.update(e, hrp)
         elseif ent.ui then
-            ent.ui.card:Destroy(); ent.ui = nil
+            pcall(function() ent.ui.card:Destroy() end)
+            ent.ui = nil
         end
     end
-    for model in pairs(entries) do
-        if not seen[model] then clearEntry(model) end
+    for key in pairs(entries) do
+        if not seen[key] then clearEntry(key) end
     end
-    local plot, mapa = 0, 0
-    for _, e in ipairs(list) do if e.kind == "Plot" then plot = plot + 1 else mapa = mapa + 1 end end
-    hubTitle.Text = ("Eggs no servidor: %d   (mapa %d · plots %d)"):format(#list, mapa, plot)
+    emptyLabel.Visible = #list == 0
+    hubSub.Text = ("%d ovos  ·  %d no mapa  ·  %d em plots"):format(#list, mapa, plots)
 end
-
-onEspToggle = function() refresh() end
-onHubToggle = function(v) hub.Visible = v; refresh() end
 
 task.spawn(function()
     while alive do
@@ -1544,10 +1780,9 @@ task.spawn(function()
         end
         task.wait(0.5)
     end
-    for model in pairs(entries) do clearEntry(model) end
+    for key in pairs(entries) do clearEntry(key) end
 end)
 
--- Gira as prévias 3D.
 table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt)
     if not toggles.hub then return end
     for _, ent in pairs(entries) do
@@ -1555,480 +1790,226 @@ table.insert(conns, RunService.RenderStepped:Connect(safe("preview", function(dt
         if ui then
             ui.angle = ui.angle + dt * 0.8
             local d = ui.radius / math.tan(math.rad(ui.cam.FieldOfView / 2)) * 1.1
-            local off = Vector3.new(math.sin(ui.angle) * d, ui.radius * 0.4, math.cos(ui.angle) * d)
-            ui.cam.CFrame = CFrame.lookAt(ui.center + off, ui.center)
+            ui.cam.CFrame = CFrame.lookAt(ui.center + Vector3.new(math.sin(ui.angle) * d, ui.radius * 0.4,
+                math.cos(ui.angle) * d), ui.center)
         end
     end
 end)))
 
--- ═══ V3NT UI ═════════════════════════════════════════════════════════════════
--- Interface própria do script (não reutiliza nenhuma GUI/biblioteca):
--- janela escura com barra lateral de abas, linhas com título + descrição,
--- switch animado, botões, campos de texto e textos que atualizam.
--- Tudo em pixels com UIScale pra telas pequenas, dentro da GUI protegida.
-local V3ntUI = {}
-do
-    local UIS = game:GetService("UserInputService")
-    local THEME = {
-        bg        = Color3.fromRGB(14, 14, 19),
-        panel     = Color3.fromRGB(20, 20, 27),
-        card      = Color3.fromRGB(27, 27, 36),
-        cardHover = Color3.fromRGB(33, 33, 44),
-        stroke    = Color3.fromRGB(45, 45, 58),
-        text      = Color3.fromRGB(235, 235, 245),
-        sub       = Color3.fromRGB(150, 150, 168),
-        accent    = Color3.fromRGB(255, 59, 92),
-        accent2   = Color3.fromRGB(176, 22, 64),
-        off       = Color3.fromRGB(58, 58, 72),
-    }
-    V3ntUI.Theme = THEME
-    local FONT      = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
-    local FONT_BOLD = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
-    local FONT_HEAVY = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy)
+-- ═══ TRAMPOLIM: STATUS + AUTO UPGRADE ════════════════════════════════════════
+-- Lê o que o próprio jogo mostra (só leitura):
+--   PlayerGui.TrampolineSignGui (JumpLTMController:1095): Title "TRAMPOLINE x/y",
+--     Upgrade.Price, LockOverlay (level necessário)
+--   PlayerGui.JumpLTMLevel (JumpLTMLevelController:180): "Level N a/b XP"
+--   Map.BaseTrampolines: pad (tag JumpPad) perto da placa → atributo JumpForce
+local function plain(t) return (tostring(t or ""):gsub("<[^>]->", "")) end
 
-    local function new(class, props, parent)
-        local o = Instance.new(class)
-        for k, v in pairs(props or {}) do pcall(function() o[k] = v end) end
-        if parent then o.Parent = parent end
-        return o
+local function readTrampoline()
+    local info = {}
+    local pg = LP:FindFirstChild("PlayerGui")
+    local sign = pg and pg:FindFirstChild("TrampolineSignGui")
+    if sign then
+        info.found = true
+        local title = sign:FindFirstChild("Title")
+        local t = title and plain(title.Text) or ""
+        info.tier, info.maxTier = t:match("(%d+)%s*/%s*(%d+)")
+        info.tier, info.maxTier = tonumber(info.tier), tonumber(info.maxTier)
+        info.isMax = t:find("MAX") ~= nil
+        local up = sign:FindFirstChild("Upgrade")
+        info.upgradeVisible = up and up.Visible or false
+        local price = up and up:FindFirstChild("Price")
+        info.price = price and plain(price.Text) or nil
+        local lock = sign:FindFirstChild("LockOverlay")
+        info.locked = lock and lock.Visible or false
+        local req = lock and lock:FindFirstChild("Rebirth")
+        info.reqLevel = req and tonumber(plain(req.Text):match("(%d+)")) or nil
     end
-    local function corner(o, r) return new("UICorner", { CornerRadius = UDim.new(0, r or 8) }, o) end
-    local function outline(o, color, t, tr)
-        return new("UIStroke", { Color = color or THEME.stroke, Thickness = t or 1, Transparency = tr or 0,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
+    local bar = pg and pg:FindFirstChild("JumpLTMLevel")
+    local label = bar and bar:FindFirstChild("Label", true)
+    if label and label:IsA("TextLabel") then
+        local p = plain(label.Text)
+        info.level = tonumber(p:match("Level%s*(%d+)"))
+        local a, b = p:match("(%d+)%s*/%s*(%d+)")
+        info.xp, info.xpNeed = tonumber(a), tonumber(b)
+        info.levelMax = p:find("MAX") ~= nil
     end
-    local function accentGradient(o, rot)
-        return new("UIGradient", { Rotation = rot or 0,
-            Color = ColorSequence.new(THEME.accent, THEME.accent2) }, o)
-    end
-    local function tween(o, t, props)
-        TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props):Play()
-    end
-    local function text(parent, props)
-        local l = new("TextLabel", { BackgroundTransparency = 1, FontFace = FONT, TextColor3 = THEME.text,
-            TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
-            TextWrapped = true, RichText = true }, parent)
-        for k, v in pairs(props) do l[k] = v end
-        return l
-    end
-    local function safeCall(fn, ...)
-        if not fn then return end
-        local args = table.pack(...)
-        task.spawn(function()
-            local ok, err = pcall(fn, table.unpack(args, 1, args.n))
-            if not ok then warn("[V3ntUI] " .. tostring(err)) end
-        end)
-    end
-    local function draggable(handle, target)
-        local dragging, startPos, startInput
-        handle.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging, startPos, startInput = true, target.Position, input.Position
-                input.Changed:Connect(function()
-                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
-                end)
-            end
-        end)
-        UIS.InputChanged:Connect(function(input)
-            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                local d = input.Position - startInput
-                target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-    end
-
-    function V3ntUI.new(gui)
-        local lib = {}
-
-        function lib:CreateWindow(cfg)
-            cfg = cfg or {}
-            local W, H = 560, 380
-
-            -- escala automática em telas pequenas
-            local scale = new("UIScale", { Scale = 1 }, gui)
-            local function rescale()
-                local cam = workspace.CurrentCamera
-                local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-                scale.Scale = math.clamp(math.min(vp.X / (W + 80), vp.Y / (H + 80)), 0.55, 1)
-            end
-            rescale()
-            pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale) end)
-
-            local main = new("Frame", { Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H),
-                BackgroundColor3 = THEME.bg, BorderSizePixel = 0, Active = true, ClipsDescendants = true }, gui)
-            corner(main, 12)
-            outline(main, THEME.stroke, 1)
-
-            -- barra superior
-            local top = new("Frame", { Name = "Top", Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = THEME.panel,
-                BorderSizePixel = 0, Active = true }, main)
-            local accentLine = new("Frame", { Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2),
-                BorderSizePixel = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, top)
-            accentGradient(accentLine)
-            local logo = new("Frame", { Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(12, 9),
-                BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, top)
-            corner(logo, 7)
-            accentGradient(logo, 45)
-            text(logo, { Size = UDim2.fromScale(1, 1), Text = "V", FontFace = FONT_HEAVY, TextSize = 18,
-                TextXAlignment = Enum.TextXAlignment.Center })
-            local titleText = tostring(cfg.Name or "V3nt")
-            local a, b = titleText:match("^(.-)%s*%-%s*(.+)$")
-            text(top, { Position = UDim2.fromOffset(48, 6), Size = UDim2.new(1, -140, 0, 20),
-                Text = a or titleText, FontFace = FONT_HEAVY, TextSize = 15 })
-            text(top, { Position = UDim2.fromOffset(48, 24), Size = UDim2.new(1, -140, 0, 16),
-                Text = b or "", TextColor3 = THEME.sub, TextSize = 11 })
-
-            local function topButton(label, x)
-                local btn = new("TextButton", { Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, x, 0, 9),
-                    BackgroundColor3 = THEME.card, AutoButtonColor = false, Text = label, FontFace = FONT_BOLD,
-                    TextSize = 14, TextColor3 = THEME.sub, BorderSizePixel = 0 }, top)
-                corner(btn, 7)
-                btn.MouseEnter:Connect(function() tween(btn, 0.15, { BackgroundColor3 = THEME.cardHover, TextColor3 = THEME.text }) end)
-                btn.MouseLeave:Connect(function() tween(btn, 0.15, { BackgroundColor3 = THEME.card, TextColor3 = THEME.sub }) end)
-                return btn
-            end
-            local closeBtn = topButton("×", -40)
-            local miniBtn = topButton("–", -74)
-            draggable(top, main)
-
-            -- barra lateral
-            local sidebar = new("Frame", { Name = "Sidebar", Position = UDim2.fromOffset(0, 46),
-                Size = UDim2.new(0, 150, 1, -46), BackgroundColor3 = THEME.panel, BorderSizePixel = 0 }, main)
-            new("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0),
-                BackgroundColor3 = THEME.stroke, BorderSizePixel = 0 }, sidebar)
-            local tabList = new("Frame", { Size = UDim2.new(1, -16, 1, -16), Position = UDim2.fromOffset(8, 10),
-                BackgroundTransparency = 1 }, sidebar)
-            new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, tabList)
-
-            local pages = new("Frame", { Name = "Pages", Position = UDim2.fromOffset(150, 46),
-                Size = UDim2.new(1, -150, 1, -46), BackgroundTransparency = 1 }, main)
-
-            -- botão flutuante pra reabrir
-            local launcher = new("TextButton", { Name = "Launcher", Size = UDim2.fromOffset(48, 48),
-                Position = UDim2.new(0, 24, 0.5, -24), BackgroundColor3 = Color3.new(1, 1, 1), Text = "V",
-                FontFace = FONT_HEAVY, TextSize = 22, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
-                Visible = false, BorderSizePixel = 0 }, gui)
-            corner(launcher, 24)
-            accentGradient(launcher, 45)
-            outline(launcher, Color3.new(1, 1, 1), 2, 0.6)
-            draggable(launcher, launcher)
-
-            local window = { Name = cfg.Name, Tabs = {} }
-            local function hide()
-                tween(main, 0.2, { Size = UDim2.fromOffset(W, 0) })
-                task.delay(0.2, function() main.Visible = false main.Size = UDim2.fromOffset(W, H) end)
-                launcher.Visible = true
-            end
-            closeBtn.MouseButton1Click:Connect(hide)
-            miniBtn.MouseButton1Click:Connect(hide)
-            launcher.MouseButton1Click:Connect(function()
-                launcher.Visible = false
-                main.Visible = true
-                main.Size = UDim2.fromOffset(W, 0)
-                tween(main, 0.25, { Size = UDim2.fromOffset(W, H) })
-            end)
-
-            local function selectTab(tab)
-                for _, t in ipairs(window.Tabs) do
-                    local on = t == tab
-                    t._page.Visible = on
-                    tween(t._btn, 0.18, { BackgroundTransparency = on and 0 or 1 })
-                    tween(t._label, 0.18, { TextColor3 = on and THEME.text or THEME.sub })
-                    tween(t._bar, 0.18, { Size = UDim2.fromOffset(3, on and 18 or 0) })
+    pcall(function()
+        local plot = getOwnPlot()
+        info.order = plot and plot:GetAttribute("Order")
+        local map = workspace:FindFirstChild("Map")
+        local bt = map and map:FindFirstChild("BaseTrampolines")
+        local signModel = bt and info.order and bt:FindFirstChild(("TrampolineSign%s"):format(tostring(info.order)))
+        local signPart = signModel and signModel:FindFirstChild("Sign")
+        if signPart then
+            local best, bestD
+            for _, pad in ipairs(CollectionService:GetTagged("JumpPad")) do
+                if pad:IsA("BasePart") and pad:IsDescendantOf(bt) then
+                    local d = (pad.Position - signPart.Position).Magnitude
+                    if not bestD or d < bestD then best, bestD = pad, d end
                 end
-                window.SelectedTab = tab
             end
-
-            function window:CreateTab(tcfg)
-                tcfg = type(tcfg) == "table" and tcfg or { Name = tostring(tcfg) }
-                local name = tostring(tcfg.Name)
-                local tab = { Name = name, Sections = {} }
-                local btn = new("TextButton", { Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = THEME.card,
-                    BackgroundTransparency = 1, AutoButtonColor = false, Text = "", BorderSizePixel = 0,
-                    LayoutOrder = #window.Tabs + 1 }, tabList)
-                corner(btn, 8)
-                local bar = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-                    Size = UDim2.fromOffset(3, 0), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, btn)
-                corner(bar, 2)
-                accentGradient(bar, 90)
-                local label = text(btn, { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -18, 1, 0),
-                    Text = name, FontFace = FONT_BOLD, TextColor3 = THEME.sub })
-                tab._btn, tab._label, tab._bar = btn, label, bar
-                btn.MouseEnter:Connect(function()
-                    if window.SelectedTab ~= tab then tween(label, 0.15, { TextColor3 = THEME.text }) end
-                end)
-                btn.MouseLeave:Connect(function()
-                    if window.SelectedTab ~= tab then tween(label, 0.15, { TextColor3 = THEME.sub }) end
-                end)
-
-                local page = new("ScrollingFrame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-                    BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = THEME.accent,
-                    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
-                    ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false }, pages)
-                new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-                new("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
-                    PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 14) }, page)
-                tab._page = page
-                btn.MouseButton1Click:Connect(function() selectTab(tab) end)
-                table.insert(window.Tabs, tab)
-                if #window.Tabs == 1 then selectTab(tab) end
-
-                local order = 0
-                local function nextOrder() order = order + 1 return order end
-
-                -- cartão base: título + descrição à esquerda, controle à direita
-                local function card(title, note, controlWidth)
-                    local c = new("Frame", { Size = UDim2.new(1, 0, 0, note and 52 or 40), BackgroundColor3 = THEME.card,
-                        BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
-                    corner(c, 8)
-                    outline(c, THEME.stroke, 1, 0.3)
-                    local w = -(controlWidth or 0) - 24
-                    local t = text(c, { Position = UDim2.fromOffset(12, note and 8 or 0),
-                        Size = UDim2.new(1, w, 0, note and 18 or 40), Text = title, FontFace = FONT_BOLD, TextSize = 13 })
-                    if note then
-                        text(c, { Position = UDim2.fromOffset(12, 26), Size = UDim2.new(1, w, 0, 18),
-                            Text = note, TextColor3 = THEME.sub, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd })
-                    end
-                    c.MouseEnter:Connect(function() tween(c, 0.15, { BackgroundColor3 = THEME.cardHover }) end)
-                    c.MouseLeave:Connect(function() tween(c, 0.15, { BackgroundColor3 = THEME.card }) end)
-                    return c, t
-                end
-
-                function tab:CreateSection(scfg)
-                    scfg = type(scfg) == "table" and scfg or { Name = tostring(scfg) }
-                    local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
-                        LayoutOrder = nextOrder() }, page)
-                    text(holder, { Size = UDim2.new(1, 0, 1, 0), Text = string.upper(tostring(scfg.Name)),
-                        FontFace = FONT_BOLD, TextSize = 11, TextColor3 = THEME.accent,
-                        TextYAlignment = Enum.TextYAlignment.Bottom })
-                    local section = { Name = scfg.Name }
-
-                    function section:CreateToggle(c)
-                        local row = card(tostring(c.Name), c.Note, 44)
-                        local pill = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
-                            Size = UDim2.fromOffset(40, 22), BackgroundColor3 = THEME.off, AutoButtonColor = false,
-                            Text = "", BorderSizePixel = 0 }, row)
-                        corner(pill, 11)
-                        local grad = accentGradient(pill)
-                        grad.Enabled = false
-                        local knob = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
-                            Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, pill)
-                        corner(knob, 8)
-                        local value = c.Default == true
-                        local function set(v, fire)
-                            value = v == true
-                            grad.Enabled = value
-                            tween(pill, 0.18, { BackgroundColor3 = value and Color3.new(1, 1, 1) or THEME.off })
-                            tween(knob, 0.18, { Position = UDim2.new(0, value and 21 or 3, 0.5, 0) })
-                            if fire ~= false then safeCall(c.Callback, value) end
-                        end
-                        pill.MouseButton1Click:Connect(function() set(not value) end)
-                        set(value, false)
-                        return { GetValue = function() return value end, SetValue = function(_, v, fire) set(v, fire) end }
-                    end
-
-                    function section:CreateButton(c)
-                        local row = card(tostring(c.Name), c.Note, 96)
-                        local b = new("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
-                            Size = UDim2.fromOffset(90, 28), BackgroundColor3 = Color3.new(1, 1, 1), AutoButtonColor = false,
-                            Text = tostring(c.ButtonText or "Executar"), FontFace = FONT_BOLD, TextSize = 12,
-                            TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0 }, row)
-                        corner(b, 7)
-                        accentGradient(b, 90)
-                        local sc = new("UIScale", { Scale = 1 }, b)
-                        b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.94 }) end)
-                        b.MouseButton1Up:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
-                        b.MouseLeave:Connect(function() tween(sc, 0.12, { Scale = 1 }) end)
-                        b.MouseButton1Click:Connect(function() safeCall(c.Callback) end)
-                        return {}
-                    end
-
-                    function section:CreateInput(c)
-                        local row = card(tostring(c.Name), c.Note, 110)
-                        local field = new("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0),
-                            Size = UDim2.fromOffset(104, 28), BackgroundColor3 = THEME.bg, BorderSizePixel = 0 }, row)
-                        corner(field, 7)
-                        local fs = outline(field, THEME.stroke, 1)
-                        local box = new("TextBox", { Size = UDim2.new(1, -12, 1, 0), Position = UDim2.fromOffset(6, 0),
-                            BackgroundTransparency = 1, Text = tostring(c.Default or ""),
-                            PlaceholderText = tostring(c.Placeholder or ""), PlaceholderColor3 = THEME.sub,
-                            FontFace = FONT_BOLD, TextSize = 12, TextColor3 = THEME.text, ClearTextOnFocus = false }, field)
-                        box.Focused:Connect(function() tween(fs, 0.15, { Color = THEME.accent }) end)
-                        box.FocusLost:Connect(function()
-                            tween(fs, 0.15, { Color = THEME.stroke })
-                            local v = box.Text:match("^%s*(.-)%s*$") or ""
-                            if c.MaxLength then v = v:sub(1, c.MaxLength) end
-                            box.Text = v
-                            safeCall(c.Callback, v)
-                        end)
-                        return { SetText = function(_, t) box.Text = tostring(t) end }
-                    end
-
-                    function section:CreateText(c)
-                        local row = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-                            BackgroundColor3 = THEME.panel, BorderSizePixel = 0, LayoutOrder = nextOrder() }, page)
-                        corner(row, 8)
-                        new("UIPadding", { PaddingTop = UDim.new(0, 9), PaddingBottom = UDim.new(0, 9),
-                            PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, row)
-                        local l = text(row, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-                            Text = tostring(c.Text or c.Name), TextColor3 = THEME.sub, TextSize = 12,
-                            TextYAlignment = Enum.TextYAlignment.Top })
-                        local set = function(_, t) l.Text = tostring(t) end
-                        return { SetText = set, Set = set }
-                    end
-
-                    table.insert(tab.Sections, section)
-                    return section
-                end
-
-                return tab
-            end
-
-            function window:GetDefaultTab() return window.Tabs[1] end
-            function window:Destroy()
-                pcall(function() main:Destroy() end)
-                pcall(function() launcher:Destroy() end)
-            end
-
-            -- entrada suave
-            main.Size = UDim2.fromOffset(W, 0)
-            tween(main, 0.3, { Size = UDim2.fromOffset(W, H) })
-            return window
+            if best and bestD < 80 then info.jumpForce = best:GetAttribute("JumpForce") or 150 end
         end
-
-        function lib:Finalize() end
-        return lib
-    end
+    end)
+    return info
 end
 
-local HUB_NAME = "V3nt - Jump For Egg"
-local function stripRich(t) return (tostring(t):gsub("<[^>]->", "")) end
+local upgradesDone, lastTier, lastUpgradeAt = 0, nil, 0
+local trampolineHook -- a janela principal liga isso no texto do trampolim
 
--- tenta os setters que a lib pode ter (o exemplo também não sabia qual existe)
-local function setOptionText(opt, text)
-    if type(opt) ~= "table" then return end
-    for _, m in ipairs({ "SetText", "Set", "SetValue", "SetTitle", "Update" }) do
-        if type(opt[m]) == "function" then
-            if pcall(opt[m], opt, text) then return true end
+local function trampolineText(info)
+    if not info.found then
+        return "Trampolim: a placa só aparece no servidor do Jump for Eggs (e depois de você ter um plot)."
+    end
+    local L = {}
+    if info.isMax then
+        table.insert(L, ("Trampolim: tier %s (MÁXIMO)"):format(tostring(info.maxTier or info.tier or "?")))
+    else
+        table.insert(L, ("Trampolim: tier %s de %s"):format(tostring(info.tier or "?"), tostring(info.maxTier or "?")))
+        local nextTxt = "Próximo upgrade: " .. (info.price or "?")
+        if info.reqLevel then
+            nextTxt = nextTxt .. (" · precisa level %d%s"):format(info.reqLevel, info.locked and " (bloqueado)" or "")
+        end
+        table.insert(L, nextTxt)
+    end
+    if info.level then
+        if info.levelMax then
+            table.insert(L, ("Seu level: %d (MÁXIMO)"):format(info.level))
+        else
+            table.insert(L, ("Seu level: %d · %s/%s XP"):format(info.level, tostring(info.xp or "?"), tostring(info.xpNeed or "?")))
         end
     end
-    return false
+    if info.jumpForce then table.insert(L, ("Força do pulo: %s"):format(tostring(info.jumpForce))) end
+    table.insert(L, ("Auto upgrade: %s · %d upgrade(s) nesta sessão"):format(
+        toggles.upgrade and "ligado" or "desligado", upgradesDone))
+    return table.concat(L, "\n")
+end
+
+task.spawn(function()
+    while alive do
+        local ok, err = pcall(function()
+            local info = readTrampoline()
+            if info.tier then
+                if lastTier and info.tier > lastTier then
+                    notify(("Trampolim subiu pro tier %d!"):format(info.tier), "ok", 6)
+                end
+                lastTier = info.tier
+            end
+            -- auto upgrade: só quando a placa do jogo libera (botão visível, sem trava de level)
+            if toggles.upgrade and upgradeRemote and info.found and not info.isMax and info.upgradeVisible
+                and not info.locked and info.order ~= nil and os.clock() - lastUpgradeAt >= 3 then
+                lastUpgradeAt = os.clock()
+                upgradeRemote:FireServer(info.order)
+                upgradesDone = upgradesDone + 1
+                log("RequestTrampolineUpgrade", info.order)
+            end
+            if trampolineHook then trampolineHook(trampolineText(info)) end
+        end)
+        if not ok then log("erro no trampolim:", err) end
+        task.wait(1)
+    end
+end)
+
+-- ═══ AUTO COLOCAR OVO / BRAINROT ═════════════════════════════════════════════
+task.spawn(function()
+    while alive do
+        task.wait(1)
+        pcall(function()
+            -- Ovo: só se carregando (CarryingJumpEgg) e no próprio plot; não atrapalha a coleta
+            if toggles.egg and eggRemote and not currentJob and LP:GetAttribute("CarryingJumpEgg") == true and onOwnPlot() then
+                eggRemote:FireServer()
+                log("RequestEggPlace (auto)")
+                setStatus("Ovo colocado.")
+            end
+            -- Brainrot: só se carregando (CarryingBaseBrainrot) e no próprio plot
+            if toggles.brainrot and brainRemote and LP:GetAttribute("CarryingBaseBrainrot") == true and onOwnPlot() then
+                brainRemote:FireServer()
+                log("RequestBrainrotPlace (auto)")
+                setStatus("Brainrot colocado.")
+            end
+        end)
+    end
+end)
+
+-- ═══ JANELA PRINCIPAL ════════════════════════════════════════════════════════
+local mainGui = newProtectedGui("V3ntJumpForEggWindow")
+
+local function shutdown()
+    alive = false
+    pcall(cancelJob)
+    pcall(Fly.stop)
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for _, g in ipairs({ sg, hubGui, mainGui }) do pcall(function() g:Destroy() end) end
 end
 
 local function buildMainUI()
-    local UI = V3ntUI.new(newProtectedGui("V3ntJumpForEggWindow"))
+    local UI = V3ntUI.new(mainGui)
+    local window = UI:CreateWindow({ Name = "V3nt - Jump For Egg" })
 
-    local function section(tab, name)
-        for _, ex in ipairs(tab.Sections or {}) do
-            if ex.Name == name then return ex end
-        end
-        return tab:CreateSection({ Name = name, Expanded = true })
-    end
+    -- Ovos
+    local eggTab = window:CreateTab({ Name = "Ovos" })
+    local vis = eggTab:CreateSection({ Name = "Visual" })
+    vis:CreateToggle({ Name = "ESP de ovos", Note = "Contorno, nome, mutação, traits e timer em cada ovo.",
+        Callback = function(v) toggles.esp = v; pcall(refresh) end })
+    local hubToggle = vis:CreateToggle({ Name = "Hub de ovos", Note = "Lista com preview 3D, voar e coletar.",
+        Callback = function(v) toggles.hub = v; hub.Visible = v; pcall(refresh) end })
+    hubClose.Activated:Connect(function() hubToggle:SetValue(false) end)
 
-    local window = UI:CreateWindow({ Name = HUB_NAME, DefaultTab = "Main" })
-    mainWindow = window
-
-    local function toggle(sec, key, name, note, enabled, onChange)
-        sec:CreateToggle({
-            Name = name,
-            Note = enabled and note or (note .. " (remote não encontrada)"),
-            Default = false,
-            Callback = safe("toggle " .. key, function(v)
-                if not enabled then
-                    if v then notify(name .. ": remote não encontrada no jogo.", Color3.fromRGB(220, 60, 60)) end
-                    toggles[key] = false
-                    return
-                end
-                toggles[key] = v == true
-                if onChange then onChange(toggles[key]) end
-            end),
-        })
-    end
+    local flySec = eggTab:CreateSection({ Name = "Fly" })
+    flySec:CreateInput({ Name = "Velocidade do fly", Note = "De 10 a 999. Fica salva em workspace/" .. CONFIG_FILE,
+        Default = tostring(config.flySpeed), Placeholder = "60", MaxLength = 4,
+        Callback = function(v)
+            local n = tonumber(v)
+            if not n then return notify("Velocidade inválida.", "warn", 4) end
+            config.flySpeed = math.clamp(math.floor(n), 10, 999)
+            if saveConfig() then
+                notify(("Velocidade %d salva."):format(config.flySpeed), "ok", 4)
+            else
+                notify(("Velocidade %d (o executor não deixou salvar o arquivo)."):format(config.flySpeed), "warn", 5)
+            end
+        end })
+    flySec:CreateButton({ Name = "Parar voo", Note = "Cancela e leva pro chão se estiver no ar.",
+        ButtonText = "Parar", Callback = function() cancelJob() end })
+    flySec:CreateButton({ Name = "Pousar", Note = "Vai pra ilha mais próxima (ou pro seu plot).",
+        ButtonText = "Pousar", Callback = function() task.spawn(Fly.landSafe) end })
 
     -- Base
-    local farmTab = window:CreateTab({ Name = "Base", SectionsExpanded = true })
-    local baseSec = section(farmTab, "Base")
-    toggle(baseSec, "egg", "Auto colocar ovo", "Coloca o ovo que você está carregando no seu plot.", eggRemote ~= nil)
-    toggle(baseSec, "brainrot", "Auto colocar brainrot", "Coloca o brainrot que você está carregando no seu plot.", brainRemote ~= nil)
-
-    -- Eggs
-    local eggTab = window:CreateTab({ Name = "Eggs", SectionsExpanded = true })
-    local eggSec = section(eggTab, "Eggs")
-    toggle(eggSec, "esp", "ESP Eggs", "Contorno, nome, mutação, traits e timer em cada ovo.", true,
-        function(v) if onEspToggle then onEspToggle(v) end end)
-    toggle(eggSec, "hub", "Hub de Eggs", "Lista de ovos com preview 3D e todas as informações.", true,
-        function(v) if onHubToggle then onHubToggle(v) end end)
-    eggSec:CreateToggle({
-        Name = "Fly coletar + colocar",
-        Note = "No VOAR do hub: pega o ovo e leva pro seu plot.",
-        Default = false,
-        Callback = safe("autoCollect", function(v)
-            autoCollect = v == true
-            pcall(paintAuto)
-        end),
-    })
-    local flySec = section(eggTab, "Fly")
-    flySec:CreateInput({
-        Name = "Velocidade do fly",
-        Note = "De 10 a 999. Se o servidor puxar de volta, o fly reduz sozinho.",
-        Placeholder = tostring(FLY.speed),
-        Default = tostring(FLY.speed),
-        MaxLength = 4,
-        Callback = safe("fly speed", function(value)
-            local n = tonumber(value)
-            if n then
-                FLY.speed = math.clamp(n, 10, 999)
-                pcall(function() speedBox.Text = tostring(FLY.speed) end)
-            end
-        end),
-    })
-    flySec:CreateButton({
-        Name = "Parar voo",
-        ButtonText = "Parar",
-        Callback = safe("parar voo", function() if cancelJob then cancelJob() else stopFly("cancel") end end),
-    })
-    flySec:CreateButton({
-        Name = "Ir pro chão",
-        ButtonText = "Pousar",
-        Callback = safe("pousar", function() task.spawn(safeLand) end),
-    })
+    local baseTab = window:CreateTab({ Name = "Base" })
+    local auto = baseTab:CreateSection({ Name = "Automático" })
+    local function remoteToggle(name, note, key, remote)
+        auto:CreateToggle({ Name = name, Note = remote and note or (note .. " (remote não encontrada)"),
+            Callback = function(v)
+                if v and not remote then notify(name .. ": remote não encontrada no jogo.", "err", 5) end
+                toggles[key] = v and remote ~= nil
+            end })
+    end
+    remoteToggle("Auto colocar ovo", "Coloca o ovo que você carrega quando estiver no seu plot.", "egg", eggRemote)
+    remoteToggle("Auto colocar brainrot", "Coloca o brainrot que você carrega no seu plot.", "brainrot", brainRemote)
+    remoteToggle("Auto upgrade trampolim", "Compra o próximo tier quando a placa do jogo liberar.", "upgrade", upgradeRemote)
 
     -- Status
-    local infoTab = window:CreateTab({ Name = "Status", SectionsExpanded = true })
-    local infoSec = section(infoTab, "Status")
-    local statusText = infoSec:CreateText({ Name = "Status", Text = "Pronto", Config = false })
-    infoSec:CreateText({
-        Name = "Remotes",
-        Text = ("Ovo %s · Brainrot %s · Grab %s"):format(
-            eggRemote and "ok" or "X", brainRemote and "ok" or "X", grabRemote and "ok" or "X"),
-        Config = false,
-    })
-    infoSec:CreateButton({
-        Name = "Fechar script",
-        ButtonText = "Fechar",
-        Callback = safe("fechar", shutdown),
-    })
-
-    -- espelha o status (no máximo 2x por segundo)
+    local statusTab = window:CreateTab({ Name = "Status" })
+    local trampSec = statusTab:CreateSection({ Name = "Trampolim" })
+    local trampText = trampSec:CreateText({ Text = "Lendo o trampolim..." })
+    trampolineHook = function(t) trampText:SetText(t) end
+    local geral = statusTab:CreateSection({ Name = "Geral" })
+    local statusText = geral:CreateText({ Text = "Pronto." })
     local lastS = 0
     statusHook = function(msg)
-        if os.clock() - lastS < 0.5 then return end
+        if os.clock() - lastS < 0.3 then return end
         lastS = os.clock()
-        setOptionText(statusText, stripRich(msg))
+        statusText:SetText(msg)
     end
-
-    UI:Finalize({ Window = window })
+    geral:CreateText({ Text = ("Remotes: Ovo %s · Brainrot %s · Grab %s · Upgrade %s"):format(
+        eggRemote and "ok" or "X", brainRemote and "ok" or "X", grabRemote and "ok" or "X", upgradeRemote and "ok" or "X") })
+    geral:CreateButton({ Name = "Fechar script", Note = "Para tudo e fecha as janelas.", ButtonText = "Fechar",
+        Callback = shutdown })
     return true
 end
 
-local okUI, uiResult = pcall(buildMainUI)
-if okUI and uiResult then
-    frame.Visible = false -- painel antigo fica só como reserva
-    log("Painel: V3nt UI")
-else
-    log("V3nt UI falhou, usando o painel reserva:", tostring(uiResult))
-    notify("Painel principal falhou (veja F9). Usando o painel reserva.", Color3.fromRGB(220, 160, 60), 6)
+local okUI, errUI = pcall(buildMainUI)
+if not okUI then
+    log("erro ao abrir a janela:", errUI)
+    notify("A janela principal deu erro (veja F9).", "err")
 end
-
-setStatus("Pronto. Veja o F9 se algo ficar cinza.")
+setStatus("Pronto.")
