@@ -1,6 +1,6 @@
 -- Steal An Egg - Auto pegar eggs do campo
 -- Lista todos os eggs do campo no servidor, ordena do melhor pro pior e vai sempre no topo:
--- vai em linha reta (acima dos obstáculos) até o egg -> AskFieldEggCarry -> volta pra base -> servidor entrega.
+-- anda rente ao chão (hover) até o egg -> AskFieldEggCarry -> volta pra base -> servidor entrega.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS = game:GetService("ReplicatedStorage")
@@ -13,6 +13,7 @@ local Assets = require(RS.Data.Assets).Directory
 getgenv().AutoFieldEggs = true
 local WANT = {} -- AssetCategory que quer pegar (vazio = qualquer um)
 local HOVER = 3 -- altura acima do chão (studs)
+local MAX_CLIMB = 14 -- quanto pode subir pra passar por cima de um obstáculo
 local SPEED_MULT = 3 -- velocidade = WalkSpeed x isso (1 = andar normal)
 
 ---------------------------------------------------------------- lista do servidor
@@ -89,31 +90,20 @@ local function rayParams()
 	return params
 end
 
--- raycast que ignora tudo que está preso ao personagem (ex: o egg carregado, que não fica dentro do Character)
-local function cast(hrp, origin, vec, params)
+-- ignora tudo que está preso ao personagem: o egg carregado não fica dentro do Character,
+-- então o raio da frente batia nele e o script achava que era parede (ia pro lado até prender)
+local function blocked(hrp, pos, dir, len, params)
 	for _ = 1, 6 do
-		local hit = workspace:Raycast(origin, vec, params)
-		if not hit or hit.Instance.AssemblyRootPart ~= hrp.AssemblyRootPart then return hit end
+		local hit = workspace:Raycast(pos, dir * len, params)
+		if not hit then return false end
+		if hit.Instance.AssemblyRootPart ~= hrp.AssemblyRootPart then return true end
 		params:AddToFilter(hit.Instance)
 	end
+	return false
 end
 
--- altura segura pra ir em linha reta: maior topo de colisão no caminho + HOVER
-local function cruiseHeight(hrp, from, to, params)
-	local top = math.max(from.Y, to.Y) + 60
-	local highest = math.max(from.Y, to.Y) - HOVER
-	local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
-	local steps = math.max(1, math.floor(flat.Magnitude / 4))
-	for i = 0, steps do
-		local p = from + flat * (i / steps)
-		local hit = cast(hrp, Vector3.new(p.X, top, p.Z), Vector3.new(0, -200, 0), params)
-		if hit then highest = math.max(highest, hit.Position.Y) end
-	end
-	return highest + HOVER
-end
-
--- Movimento em linha reta: sobe até a altura segura do caminho, vai RETO até o alvo e desce.
--- Sem desvio lateral (era isso que jogava o personagem pros lados e prendia na parede).
+-- Anda flutuando rente ao chão (WalkSpeed x SPEED_MULT): segue o relevo,
+-- sobe no máximo MAX_CLIMB pra passar obstáculos e contorna pelos lados se não der.
 local function moveTo(getTarget, shouldAbort)
 	local c, hrp, hum = char()
 	if not c then return false end
@@ -130,10 +120,10 @@ local function moveTo(getTarget, shouldAbort)
 	ao.Parent = hrp
 	hum.PlatformStand = true
 
-	local params = rayParams()
+	local params, refreshed = rayParams(), os.clock()
 	local result, start = nil, os.clock()
 	local timeout = (getTarget() - hrp.Position).Magnitude / math.max(hum.WalkSpeed * SPEED_MULT, 8) * 2 + 10
-	local cruiseY, planned = nil, 0
+	local side = 1
 
 	while result == nil do
 		RunService.Heartbeat:Wait()
@@ -145,6 +135,7 @@ local function moveTo(getTarget, shouldAbort)
 			result = false
 			break
 		end
+		if os.clock() - refreshed > 2 then params, refreshed = rayParams(), os.clock() end
 
 		local pos, target = hrp.Position, getTarget()
 		local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
@@ -154,24 +145,33 @@ local function moveTo(getTarget, shouldAbort)
 			break
 		end
 
-		-- replaneja a altura a cada 1s (o caminho que falta muda conforme anda)
-		if os.clock() - planned > 1 then
-			params = rayParams()
-			cruiseY, planned = cruiseHeight(hrp, pos, target, params), os.clock()
+		local speed = hum.WalkSpeed * SPEED_MULT -- acompanha o slow de carregar egg
+		local dir = flat.Unit
+		local groundHit = workspace:Raycast(pos, Vector3.new(0, -60, 0), params) -- chão nunca é parte do personagem
+		local groundY = groundHit and groundHit.Position.Y or (target.Y - HOVER)
+		local height = pos.Y - groundY
+
+		local look = math.min(dist, 6)
+		local move, wantHeight = dir, HOVER
+		if blocked(hrp, pos, dir, look, params) then
+			if height < MAX_CLIMB then
+				wantHeight = height + 6 -- tenta passar por cima
+				move = dir * 0.2
+			else
+				-- alto demais e ainda bloqueado: contorna pelo lado livre
+				local right = Vector3.new(-dir.Z, 0, dir.X)
+				if blocked(hrp, pos, right * side, 6, params) then side = -side end
+				move = (right * side + dir * 0.3).Unit
+				wantHeight = height
+			end
+		elseif dist < 10 then
+			wantHeight = math.max(target.Y - groundY, 0) + 1 -- chegando: desce até o egg/base
 		end
 
-		local speed = hum.WalkSpeed * SPEED_MULT -- acompanha o slow de carregar egg
-		local dir = dist > 0.1 and flat.Unit or Vector3.zero
-		local wantY = dist > 8 and cruiseY or target.Y
-		local dy = wantY - pos.Y
-
-		-- só anda pra frente quando já está na altura (não raspa em parede subindo)
-		local horizSpeed = math.min(speed, dist * 4)
-		if dist > 8 and dy > 2 then horizSpeed = horizSpeed * 0.15 end
-		local vy = math.clamp(dy * 5, -speed, speed)
-
-		lv.VectorVelocity = Vector3.new(dir.X * horizSpeed, vy, dir.Z * horizSpeed)
-		if dist > 1 then ao.CFrame = CFrame.lookAt(pos, pos + dir) end
+		local vy = math.clamp((groundY + wantHeight - pos.Y) * 5, -speed, speed)
+		local horiz = move * math.min(speed, dist * 4)
+		lv.VectorVelocity = Vector3.new(horiz.X, vy, horiz.Z)
+		ao.CFrame = CFrame.lookAt(pos, pos + dir)
 	end
 
 	lv:Destroy()
