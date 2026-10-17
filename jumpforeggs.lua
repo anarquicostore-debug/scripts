@@ -1,46 +1,14 @@
 -- ─── LURAPH (proteção) ────────────────────────────────────────────────────────
--- Macros do Luraph. Enquanto o script NÃO passou pelo obfuscator (LPH_OBFUSCATED
--- é falso), estas versões são no-op: LPH_ENCFUNC devolve a própria função,
--- LPH_ENCSTR/LPH_ENCNUM devolvem o valor e LPH_ATTRIBUTES não faz nada. Assim dá
--- pra rodar e testar o script normalmente. Depois de passar pelo Luraph, elas
--- viram a ofuscação/encriptação de verdade.
+-- Luraph moderno usa o sistema de atributos: dentro de cada função que não pode
+-- vazar, a primeira linha é LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE)) e o Luraph
+-- virtualiza/protege aquela função. Enquanto o script NÃO passou pelo obfuscator
+-- (LPH_OBFUSCATED é falso), as macros abaixo são no-op, então dá pra rodar e
+-- testar o script normalmente. VM/PRESET precisam existir fora do Luraph senão a
+-- chamada dá "attempt to call a nil value".
 if not LPH_OBFUSCATED then
-    LPH_ENCFUNC = function(fn, obfKey, runtimeKey)
-        return fn
-    end
-    LPH_ENCSTR = function(str, key, runtimeKey)
-        return str
-    end
-    LPH_ENCNUM = function(num, keys)
-        return num
-    end
     LPH_ATTRIBUTES = function(...) end
-    LPH_PRECHECK = function(fn, expected) end
-    -- VM/PRESET aparecem dentro de LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE)); fora
-    -- do Luraph precisam existir pra chamada não dar "attempt to call a nil value".
     VM = function(...) end
     PRESET = function(...) end
-end
-
--- Chave usada no LPH_ENCFUNC das partes sensíveis (remotes, fly/3D, etc.).
-local LPH_KEY = "a3f9c1e7b2d84f6091cde35a7b8012f4e9d6c3a1f8057b2e4d9a6c3f1082e5b"
-
--- get_key(): anti-tamper. Se o chunk do script foi alterado (nome diferente de
--- "script"), devolve uma chave falsa e as funções protegidas não descriptografam.
--- Fora do Luraph o retorno é ignorado (LPH_ENCFUNC só devolve a função).
-local function get_key()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
-
-    if debug.info(1, "s") ~= "[string \"script\"]" then
-        local chars = "0123456789abcdef"
-        local fake = ""
-        for i = 1, 64 do
-            fake = fake .. chars:sub(math.random(1, #chars), math.random(1, #chars))
-        end
-        return fake
-    end
-
-    return LPH_ENCSTR("a3f9c1e7b2d84f6091cde35a7b8012f4e9d6c3a1f8057b2e4d9a6c3f1082e5b", 123)
 end
 
 -- Jump for Eggs (Steal a Brainrot) — só remotes
@@ -108,7 +76,7 @@ local function upvalues(fn)
 end
 
 -- Única instância da classe entre os upvalues de fn.
-local onlyRemote = LPH_ENCFUNC(function(fn, class)
+local function onlyRemote(fn, class)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local ups = upvalues(fn)
     if not ups then return nil end
@@ -120,10 +88,10 @@ local onlyRemote = LPH_ENCFUNC(function(fn, class)
         end
     end
     return found
-end, LPH_KEY, get_key())
+end
 
 -- Nome exato dentro das pastas do Net (só GetChildren).
-local remoteByName = LPH_ENCFUNC(function(path, class)
+local function remoteByName(path, class)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local folders = {}
     local pk = ReplicatedStorage:FindFirstChild("Packages")
@@ -146,7 +114,7 @@ local remoteByName = LPH_ENCFUNC(function(path, class)
         end
     end
     return nil
-end, LPH_KEY, get_key())
+end
 
 -- Funções locais do controller, achadas pelo nome de debug a partir dos
 -- upvalues de JumpLTMController.Start (linha 1219). Índice do dump como reserva.
@@ -177,7 +145,7 @@ do
     end
 end
 
-local resolve = LPH_ENCFUNC(function(label, fromFn, path, pick)
+local function resolve(label, fromFn, path, pick)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local r, how
     if fromFn then
@@ -187,7 +155,7 @@ local resolve = LPH_ENCFUNC(function(label, fromFn, path, pick)
     if not r then r = remoteByName(path, "RemoteEvent"); how = r and "nome exato" end
     log(label, r and ("ok via " .. how .. " -> " .. r:GetFullName()) or "NÃO encontrada")
     return r
-end, LPH_KEY, get_key())
+end
 
 local eggRemote     = resolve("RequestEggPlace", inner.setupEggPlaceInput, "JumpLTMService/RequestEggPlace")
 local brainRemote   = resolve("RequestBrainrotPlace", inner.setupPlaceButton, "JumpLTMService/RequestBrainrotPlace")
@@ -1101,7 +1069,7 @@ local function planRoute(start, goal, params)
     CAST_RADIUS = old
     return r
 end
-planRouteOnce = LPH_ENCFUNC(function(start, goal, params)
+function planRouteOnce(start, goal, params)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     castCount = 0
     -- perto e na mesma altura: reto
@@ -1148,14 +1116,14 @@ planRouteOnce = LPH_ENCFUNC(function(start, goal, params)
     end
     log("sem rota livre (" .. castCount .. " testes)")
     return nil
-end, LPH_KEY, get_key())
+end
 
 -- Desvio: tem algo na frente (ex.: ilha em cima enquanto sobe). Procura um
 -- ponto ao lado, o mais perto possível, de onde dá pra seguir até o destino do
 -- trecho sem bater. Subindo/descendo: testa 16 direções na horizontal e, do
 -- ponto ao lado, a coluna até a altura do destino. Andando de lado: testa
 -- direita/esquerda/cima/baixo do movimento. Devolve os pontos a inserir.
-local findDetour = LPH_ENCFUNC(function(pos, target, params)
+local function findDetour(pos, target, params)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local dir = target - pos
     if dir.Magnitude < 1 then return nil end
@@ -1188,10 +1156,10 @@ local findDetour = LPH_ENCFUNC(function(pos, target, params)
         end
     end
     return nil
-end, LPH_KEY, get_key())
+end
 
 -- motor -----------------------------------------------------------------------
-local makeMotor = LPH_ENCFUNC(function(hrp, hum)
+local function makeMotor(hrp, hum)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local att = Instance.new("Attachment")
     att.Name = "V3ntFlyAtt"
@@ -1230,7 +1198,7 @@ local makeMotor = LPH_ENCFUNC(function(hrp, hum)
         end)
     end
     return motor
-end, LPH_KEY, get_key())
+end
 
 local function groundBelow(pos, depth, params)
     local ok, r = pcall(function()
@@ -1286,7 +1254,7 @@ local landing = false
 -- Voa até getTarget() (Vector3 ou nil = alvo sumiu). Bloqueia até terminar.
 -- Devolve: chegou (bool), motivo ("ok", "lost", "stuck", "timeout", "nochar",
 -- "cancel", "replace", "error").
-Fly.travel = LPH_ENCFUNC(function(getTarget, opts)
+function Fly.travel(getTarget, opts)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     opts = opts or {}
     Fly.cancel("replace")
@@ -1413,10 +1381,10 @@ Fly.travel = LPH_ENCFUNC(function(getTarget, opts)
         task.spawn(function() Fly.landSafe() end)
     end
     return result, reason
-end, LPH_KEY, get_key())
+end
 
 -- Se estiver no ar sem chão perto, pousa na ilha mais próxima (ou no plot).
-Fly.landSafe = LPH_ENCFUNC(function()
+function Fly.landSafe()
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if landing or Fly.current then return end
     local _, hrp, hum = getChar()
@@ -1439,7 +1407,7 @@ Fly.landSafe = LPH_ENCFUNC(function()
     end)
     if not ok then log("erro no pouso:", err) end
     landing = false
-end, LPH_KEY, get_key())
+end
 
 function Fly.stop()
     Fly.cancel("cancel")
@@ -1588,7 +1556,7 @@ local function readOverhead(model)
     return out
 end
 
-local collectEggs = LPH_ENCFUNC(function()
+local function collectEggs()
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local list = {}
     -- Ovos colocados nos plots
@@ -1632,10 +1600,10 @@ local collectEggs = LPH_ENCFUNC(function()
         end
     end
     return list
-end, LPH_KEY, get_key())
+end
 
 -- ─── Texto de info ───────────────────────────────────────────────────────────
-local eggInfo = LPH_ENCFUNC(function(e, hrp)
+local function eggInfo(e, hrp)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local a = type(e.index) == "string" and AnimalsData[e.index] or nil
     local name = a and a.DisplayName or e.index or T("Ovo")
@@ -1724,14 +1692,14 @@ local eggInfo = LPH_ENCFUNC(function(e, hrp)
     -- texto curto do ESP: nome + mutação colorida (os ícones vão em imagens)
     local short = "<b>" .. esc(name) .. "</b>" .. (e.mutation and (" " .. mutationRich(e.mutation)) or "")
     return table.concat(L, "\n"), short, rcolor, timerTxt, dist
-end, LPH_KEY, get_key())
+end
 
 -- ─── ESP ─────────────────────────────────────────────────────────────────────
 local espFolder = Instance.new("Folder")
 espFolder.Name = "EggESP"
 espFolder.Parent = sg
 
-local makeEsp = LPH_ENCFUNC(function(e)
+local function makeEsp(e)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local hl = Instance.new("Highlight")
     hl.Adornee = e.model
@@ -1779,7 +1747,7 @@ local makeEsp = LPH_ENCFUNC(function(e)
     t.TextWrapped = true
     t.Parent = bb
     return { hl = hl, bb = bb, label = t }
-end, LPH_KEY, get_key())
+end
 
 -- ═══ HUB DE OVOS ═════════════════════════════════════════════════════════════
 local U, TH = V3ntUI.util, V3ntUI.Theme
@@ -1875,7 +1843,7 @@ local function chip(parent, order)
 end
 
 -- Cópia visual do model pro preview 3D (sem scripts, prompts, GUIs).
-local cloneForPreview = LPH_ENCFUNC(function(model)
+local function cloneForPreview(model)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local oldArch = model.Archivable
     model.Archivable = true
@@ -1891,7 +1859,7 @@ local cloneForPreview = LPH_ENCFUNC(function(model)
         end
     end
     return c
-end, LPH_KEY, get_key())
+end
 
 -- ─── VOAR / COLETAR ──────────────────────────────────────────────────────────
 local HIDDEN_POS = Vector3.new(10000, 10000, 10000)
@@ -2000,7 +1968,7 @@ local function placeSpots()
 end
 
 -- Devolve true, ou false + motivo: "notcarrying", "noremote", "nospot", "rejected"
-local placeEgg = LPH_ENCFUNC(function(tag)
+local function placeEgg(tag)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if LP:GetAttribute("CarryingJumpEgg") ~= true then return false, "notcarrying" end
     if not eggRemote then return false, "noremote" end
@@ -2013,7 +1981,7 @@ local placeEgg = LPH_ENCFUNC(function(tag)
         if LP:GetAttribute("CarryingJumpEgg") ~= true then return true end
     end
     return false, "rejected"
-end, LPH_KEY, get_key())
+end
 
 -- Explica por que não colocou
 local function placeProblem(reason)
@@ -2041,7 +2009,7 @@ local function cancelJob()
     Fly.stop()
 end
 
-local startEggJob = LPH_ENCFUNC(function(e, ui, mode)
+local function startEggJob(e, ui, mode)
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if currentJob then
         local same = currentJob.ui == ui and currentJob.mode == mode
@@ -2189,7 +2157,7 @@ local startEggJob = LPH_ENCFUNC(function(e, ui, mode)
             fail(T("Erro no voo/coleta"), T("Tente de novo. Se repetir, mande o F9 (linhas [JumpForEggs])."), true)
         end
     end)
-end, LPH_KEY, get_key())
+end
 
 -- ─── CARD ────────────────────────────────────────────────────────────────────
 local function makeCard(e)
@@ -2828,7 +2796,7 @@ end
 --   Map.BaseTrampolines: pad (tag JumpPad) perto da placa → atributo JumpForce
 local function plain(t) return (tostring(t or ""):gsub("<[^>]->", "")) end
 
-local readTrampoline = LPH_ENCFUNC(function()
+local function readTrampoline()
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local info = {}
     local pg = LP:FindFirstChild("PlayerGui")
@@ -2877,7 +2845,7 @@ local readTrampoline = LPH_ENCFUNC(function()
         end
     end)
     return info
-end, LPH_KEY, get_key())
+end
 
 local upgradesDone, lastTier, lastUpgradeAt = 0, nil, 0
 local trampolineHook -- a janela principal liga isso no texto do trampolim
@@ -2910,7 +2878,7 @@ local function trampolineText(info)
     return table.concat(L, "\n")
 end
 
-task.spawn(LPH_ENCFUNC(function()
+task.spawn(function()
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     while alive do
         local ok, err = pcall(function()
@@ -2934,11 +2902,11 @@ task.spawn(LPH_ENCFUNC(function()
         if not ok then log("erro no trampolim:", err) end
         task.wait(1)
     end
-end, LPH_KEY, get_key()))
+end)
 
 -- ═══ AUTO COLOCAR OVO / BRAINROT ═════════════════════════════════════════════
 local autoPlaceWarnAt = 0
-task.spawn(LPH_ENCFUNC(function()
+task.spawn(function()
     LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     while alive do
         task.wait(1)
@@ -2962,7 +2930,7 @@ task.spawn(LPH_ENCFUNC(function()
             end
         end)
     end
-end, LPH_KEY, get_key()))
+end)
 
 -- ═══ JANELA PRINCIPAL ════════════════════════════════════════════════════════
 local mainGui = newProtectedGui("V3ntJumpForEggWindow")
