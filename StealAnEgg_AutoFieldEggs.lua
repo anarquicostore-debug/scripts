@@ -322,6 +322,7 @@ local function straightClear(a, b, params)
 	if crossesWall(a, b) or math.abs(b.Y - a.Y) > 4 then return false end
 	local dir = b - a
 	if dir.Magnitude < 0.5 then return true end
+	if dir.Magnitude > 1000 then return false end -- Spherecast do Roblox vai no máximo até 1024 studs
 	if workspace:Spherecast(a, 1.5, dir, params) then return false end
 	local steps = math.floor(dir.Magnitude / 6)
 	for i = 1, steps do
@@ -381,17 +382,35 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 	local lastAbortCheck, aborted = 0, false
 	local result
 
+	local planning = false
 	local function plan()
-		target = getTarget()
-		local goal = ground(target, params)
-		if opts.straight or straightClear(hrp.Position, goal + Vector3.new(0, 2.5, 0), params) then
-			wps = { { Position = goal } }
-		else
-			wps = computePath(hrp.Position, goal)
-				or computePath(hrp.Position, ground(goal + flat(hrp.Position - goal).Unit * 3, params))
-				or { { Position = goal } }
+		if planning then return end
+		planning = true
+		local ok, err = pcall(function()
+			target = getTarget()
+			local goal = ground(target, params)
+			local new
+			if opts.straight or straightClear(hrp.Position, goal + Vector3.new(0, 2.5, 0), params) then
+				new = { { Position = goal } }
+			else
+				new = computePath(hrp.Position, goal)
+					or computePath(hrp.Position, ground(goal + flat(hrp.Position - goal).Unit * 3, params))
+				local far = flat(goal - hrp.Position)
+				if not new and far.Magnitude > 300 then
+					-- muito longe pro Pathfinding: calcula até um ponto no meio do caminho e continua de lá
+					local mid = ground(hrp.Position + far.Unit * 250, params)
+					new = computePath(hrp.Position, mid)
+					if new then new.partial = true end
+				end
+				new = new or { { Position = goal } }
+			end
+			wps, i = new, 1
+		end)
+		if not ok then
+			warn("[AutoFieldEggs] erro calculando caminho:", err)
+			wps, i = { { Position = getTarget() } }, 1
 		end
-		i = 1
+		planning = false
 	end
 
 	local function arrived()
@@ -400,9 +419,7 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 	end
 
 	plan()
-	local conn
-	conn = RunService.Stepped:Connect(function()
-		if result ~= nil then return end
+	local function step()
 		if not hrp.Parent or hum.Health <= 0 or not getgenv().AutoFieldEggs or os.clock() - start > timeout then
 			result = false
 			return
@@ -440,6 +457,9 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 			wp = wps[i]
 			to = flat(wp.Position - pos)
 		end
+		if wps.partial and i == #wps and to.Magnitude < 4 then
+			task.spawn(plan) -- chegou no fim do trecho: calcula o próximo
+		end
 		if to.Magnitude < 0.1 then return end
 
 		local speed = baseSpeed(hum) * speedMult
@@ -469,6 +489,16 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 				stuck = 0
 			end
 			lastCheck, lastPos = os.clock(), hrp.Position
+		end
+	end
+
+	-- erro dentro do passo não pode travar o script nem deixar o controle desligado
+	local conn = RunService.Stepped:Connect(function()
+		if result ~= nil then return end
+		local ok, err = pcall(step)
+		if not ok then
+			warn("[AutoFieldEggs] erro no movimento:", err)
+			result = false
 		end
 	end)
 
@@ -517,46 +547,55 @@ resync()
 local lastSync = os.clock()
 
 while getgenv().AutoFieldEggs do
-	if os.clock() - lastSync > 20 then resync() lastSync = os.clock() end
-	local _, hrp, hum = char()
-	local plot = PlotState.ResolvePlot()
+	-- qualquer erro numa rodada só é avisado: o script continua e o controle do jogador volta
+	local ok, err = pcall(function()
+		if os.clock() - lastSync > 20 then resync() lastSync = os.clock() end
+		local _, hrp, hum = char()
+		local plot = PlotState.ResolvePlot()
 
-	if hrp and plot and carrying then
-		-- ainda com egg na mão (ex.: script reiniciado): leva pra base
-		goHome(plot, areaAt(hrp.Position), math.huge) -- não sabe o egg: foge no MAX_MULT
-	elseif hrp and plot then
-		local best = ranked(hum)
-		if best then
-			local uid = best.Uid
-			-- aborta se o egg sumir/for pego ou se aparecer um melhor no servidor
-			local arrived = walkTo(function()
-				local cur = field[uid]
-				return (cur or best).BottomCFrame.Position
-			end, function()
-				local cur = field[uid]
-				if not cur or not available(cur) then return true end
-				local _, _, h = char()
-				local top = h and ranked(h)
-				return top ~= nil and top.Uid ~= uid and better(top, cur)
-			end, SPEED_IDA, REACH)
+		if hrp and plot and carrying then
+			-- ainda com egg na mão (ex.: script reiniciado): leva pra base
+			goHome(plot, areaAt(hrp.Position), math.huge) -- não sabe o egg: foge no MAX_MULT
+		elseif hrp and plot then
+			local best = ranked(hum)
+			if best then
+				local uid = best.Uid
+				-- aborta se o egg sumir/for pego ou se aparecer um melhor no servidor
+				local arrived = walkTo(function()
+					local cur = field[uid]
+					return (cur or best).BottomCFrame.Position
+				end, function()
+					local cur = field[uid]
+					if not cur or not available(cur) then return true end
+					local _, _, h = char()
+					local top = h and ranked(h)
+					return top ~= nil and top.Uid ~= uid and better(top, cur)
+				end, SPEED_IDA, REACH)
 
-			if arrived then
-				local cur = field[uid] or best
-				local slotKey = uid:find("FirstAreaEgg_", 1, true) == 1 and (cur.AreaId .. ":" .. cur.NestId) or nil
-				local area = areaAt(cur.BottomCFrame.Position)
-				needCache[uid] = nil
-				local need = escapeNeed(cur) -- com o guarda onde ele está agora
-				local speedBefore = baseSpeed(hum)
-				local s, got = pcall(Carry.InvokeServer, Carry, { Uid = uid, FirstAreaSlotKey = slotKey })
-				if s and got == true and waitFor(function() return carrying end, 2) then
-					goHome(plot, area, need, speedBefore)
-				else
-					skip[uid] = os.clock() + 15 -- recusado: vai no próximo da lista
+				if arrived then
+					local cur = field[uid] or best
+					local slotKey = uid:find("FirstAreaEgg_", 1, true) == 1 and (cur.AreaId .. ":" .. cur.NestId) or nil
+					local area = areaAt(cur.BottomCFrame.Position)
+					needCache[uid] = nil
+					local need = escapeNeed(cur) -- com o guarda onde ele está agora
+					local speedBefore = baseSpeed(hum)
+					local s, got = pcall(Carry.InvokeServer, Carry, { Uid = uid, FirstAreaSlotKey = slotKey })
+					if s and got == true and waitFor(function() return carrying end, 2) then
+						goHome(plot, area, need, speedBefore)
+					else
+						skip[uid] = os.clock() + 15 -- recusado: vai no próximo da lista
+					end
+				elseif field[uid] and available(field[uid]) then
+					skip[uid] = os.clock() + 15 -- não conseguiu chegar: não fica preso nele
 				end
-			elseif field[uid] and available(field[uid]) then
-				skip[uid] = os.clock() + 15 -- não conseguiu chegar: não fica preso nele
 			end
 		end
+	end)
+	if not ok then
+		warn("[AutoFieldEggs] erro:", err)
+		controls(true)
+		local _, _, hum = char()
+		if hum then restoreSpeed(hum) end
 	end
 	task.wait(0.2)
 end
