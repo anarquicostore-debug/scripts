@@ -14,6 +14,7 @@ getgenv().AutoFieldEggs = true
 local WANT = {} -- AssetCategory que quer pegar (vazio = qualquer um)
 local HOVER = 3 -- altura acima do chão (studs)
 local MAX_CLIMB = 14 -- quanto pode subir pra passar por cima de um obstáculo
+local SPEED_MULT = 3 -- velocidade = WalkSpeed x isso (1 = andar normal)
 
 ---------------------------------------------------------------- lista do servidor
 local field, carrying, skip = {}, false, {} -- field[uid] = record (todos os eggs do campo no servidor)
@@ -93,7 +94,7 @@ local function blocked(pos, dir, len, params)
 	return workspace:Raycast(pos, dir * len, params) ~= nil
 end
 
--- Anda flutuando rente ao chão na WalkSpeed do personagem: segue o relevo,
+-- Anda flutuando rente ao chão (WalkSpeed x SPEED_MULT): segue o relevo,
 -- sobe no máximo MAX_CLIMB pra passar obstáculos e contorna pelos lados se não der.
 local function moveTo(getTarget, shouldAbort)
 	local c, hrp, hum = char()
@@ -113,7 +114,7 @@ local function moveTo(getTarget, shouldAbort)
 
 	local params, refreshed = rayParams(), os.clock()
 	local result, start = nil, os.clock()
-	local timeout = (getTarget() - hrp.Position).Magnitude / math.max(hum.WalkSpeed, 8) * 2 + 10
+	local timeout = (getTarget() - hrp.Position).Magnitude / math.max(hum.WalkSpeed * SPEED_MULT, 8) * 2 + 10
 	local side = 1
 
 	while result == nil do
@@ -136,7 +137,7 @@ local function moveTo(getTarget, shouldAbort)
 			break
 		end
 
-		local speed = hum.WalkSpeed -- mesma velocidade de andar do personagem (inclui o slow carregando)
+		local speed = hum.WalkSpeed * SPEED_MULT -- acompanha o slow de carregar egg
 		local dir = flat.Unit
 		local groundHit = workspace:Raycast(pos, Vector3.new(0, -60, 0), params)
 		local groundY = groundHit and groundHit.Position.Y or (target.Y - HOVER)
