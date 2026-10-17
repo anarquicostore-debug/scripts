@@ -333,32 +333,39 @@ end
 
 local function rotate(v, deg) return CFrame.Angles(0, math.rad(deg), 0):VectorToWorldSpace(v) end
 
--- desvio local: segue a direção desejada; se tiver obstáculo baixo pula, se for parede gira o mínimo possível
-local ANGLES = { 0, 20, -20, 40, -40, 65, -65, 90, -90 }
-local function steer(pos, dir, params, look)
+-- desvio local: segue a direção desejada; se tiver obstáculo baixo pula, se for parede gira o mínimo possível.
+-- side = lado que desviou da última vez (1/-1): continua contornando pelo mesmo lado, sem ficar trocando.
+local ANGLES = { 20, 40, 65, 90 }
+local function steer(pos, dir, params, look, side)
 	local ahead = workspace:Spherecast(pos, 1.5, dir * look, params)
-	if not ahead then return dir, false end
+	if not ahead then return dir, false, side end
 	if not workspace:Spherecast(pos + Vector3.new(0, 3.5, 0), 1.5, dir * look, params) then
-		return dir, true -- obstáculo baixo: pula por cima
+		return dir, true, side -- obstáculo baixo: pula por cima
 	end
-	for i = 2, #ANGLES do
-		local d = rotate(dir, ANGLES[i])
-		if not workspace:Spherecast(pos, 1.5, d * look, params) and not crossesWall(pos, pos + d * look) then
-			return d, false
+	for _, s in ipairs({ side, -side }) do
+		for _, a in ipairs(ANGLES) do
+			local d = rotate(dir, a * s)
+			if not workspace:Spherecast(pos, 1.5, d * look, params) and not crossesWall(pos, pos + d * look) then
+				return d, false, s
+			end
 		end
 	end
-	return dir, true
+	return dir, true, side
 end
 
--- foge dos guardas acordados que estiverem perto
+-- desvia de guardas acordados que estiverem perto: só puxa pro lado, nunca faz voltar pra trás
 local function avoidGuards(pos, dir)
+	local push = Vector3.zero
 	for _, toGuard in ipairs(awakeGuards(pos)) do
 		local d = toGuard.Magnitude
-		if d > 0.1 and dir:Dot(toGuard.Unit) > -0.2 then
-			dir = dir - toGuard.Unit * ((GUARD_AVOID - d) / GUARD_AVOID) * 1.5
+		if d > 0.1 and dir:Dot(toGuard.Unit) > 0 then -- guarda na frente
+			local right = Vector3.new(-dir.Z, 0, dir.X)
+			local away = right:Dot(toGuard) > 0 and -right or right
+			push += away * ((GUARD_AVOID - d) / GUARD_AVOID)
 		end
 	end
-	return dir.Magnitude > 0.05 and flat(dir).Unit or dir
+	if push.Magnitude < 0.01 then return dir end
+	return (dir + push.Unit * math.min(push.Magnitude, 1)).Unit
 end
 
 -- Anda até o alvo: Pathfinding pra desviar de paredes, atalho em linha reta sempre que dá (fica reto),
@@ -378,8 +385,20 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 	local timeout = (target - hrp.Position).Magnitude / math.max(baseSpeed(hum) * speedMult, 8) * 3 + 15
 	local start = os.clock()
 	local wps, i = nil, 1
+	local side, prevDir = 1, nil
+
+	-- começa no waypoint seguinte ao mais perto de onde o personagem está AGORA
+	-- (o 1º waypoint é onde ele estava quando o cálculo começou: ir nele = voltar pra trás)
+	local function startIndex(list)
+		local best, bestD = 1, math.huge
+		for k, w in ipairs(list) do
+			local d = flat(w.Position - hrp.Position).Magnitude
+			if d < bestD then best, bestD = k, d end
+		end
+		return math.min(best + 1, #list)
+	end
 	local lastShortcut, lastCheck, lastPos, stuck, replans = 0, os.clock(), hrp.Position, 0, 0
-	local lastAbortCheck, aborted = 0, false
+	local lastAbortCheck = 0
 	local result
 
 	local planning = false
@@ -404,7 +423,7 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 				end
 				new = new or { { Position = goal } }
 			end
-			wps, i = new, 1
+			wps, i = new, startIndex(new)
 		end)
 		if not ok then
 			warn("[AutoFieldEggs] erro calculando caminho:", err)
@@ -450,28 +469,45 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 			end
 		end
 
+		local speed = baseSpeed(hum) * speedMult
 		local wp = wps[i]
 		local to = flat(wp.Position - pos)
-		if to.Magnitude < 2.5 and i < #wps then
-			i += 1
-			wp = wps[i]
-			to = flat(wp.Position - pos)
+		-- passa pro próximo waypoint quando chega perto OU quando já passou dele
+		-- (correndo rápido ele passa do ponto; antes disso fazia o personagem voltar)
+		local passR = math.max(2.5, speed * 0.08)
+		while i < #wps do
+			local nextSeg = flat(wps[i + 1].Position - wp.Position)
+			if to.Magnitude < passR or nextSeg:Dot(flat(pos - wp.Position)) > 0 then
+				i += 1
+				wp = wps[i]
+				to = flat(wp.Position - pos)
+			else
+				break
+			end
 		end
-		if wps.partial and i == #wps and to.Magnitude < 4 then
+		if wps.partial and i == #wps and to.Magnitude < passR + 2 then
 			task.spawn(plan) -- chegou no fim do trecho: calcula o próximo
 		end
 		if to.Magnitude < 0.1 then return end
 
-		local speed = baseSpeed(hum) * speedMult
 		local look = math.clamp(speed * 0.25, 5, 35) -- quanto mais rápido, mais longe olha pra desviar
 		local dir, jump = to.Unit, false
 		if i < #wps or to.Magnitude > 8 then -- encostando no alvo não desvia (o próprio egg/ninho conta como obstáculo)
-			dir, jump = steer(pos, dir, params, math.min(look, to.Magnitude + 1))
+			dir, jump, side = steer(pos, dir, params, math.min(look, to.Magnitude + 1), side)
 		end
 		dir = avoidGuards(pos, dir)
+		if prevDir and prevDir:Dot(dir) > 0 then
+			dir = (prevDir * 0.4 + dir).Unit -- suaviza a virada (sem tremedeira)
+		end
+		prevDir = dir
 		if (wp.Jump or jump) and hum.FloorMaterial ~= Enum.Material.Air then hum.Jump = true end
 
-		setSpeed(hum, speedMult)
+		-- chegando no destino final freia, pra não passar do ponto e ter que voltar
+		local mult = speedMult
+		if i == #wps and not opts.straight and to.Magnitude < speed * 0.4 then
+			mult = math.max(1, speedMult * to.Magnitude / (speed * 0.4))
+		end
+		setSpeed(hum, mult)
 		hum:Move(dir, false)
 
 		-- travou? pula; travou várias vezes? recalcula o caminho
@@ -560,15 +596,19 @@ while getgenv().AutoFieldEggs do
 			local best = ranked(hum)
 			if best then
 				local uid = best.Uid
-				-- aborta se o egg sumir/for pego ou se aparecer um melhor no servidor
+				local since = os.clock()
+				-- aborta se o egg sumir/for pego. Troca por um melhor só se já andou 3s nesse e ainda está longe
+				-- (senão fica indo e voltando entre dois eggs)
 				local arrived = walkTo(function()
 					local cur = field[uid]
 					return (cur or best).BottomCFrame.Position
 				end, function()
 					local cur = field[uid]
 					if not cur or not available(cur) then return true end
-					local _, _, h = char()
-					local top = h and ranked(h)
+					local _, r, h = char()
+					if not h or os.clock() - since < 3 then return false end
+					if flat(cur.BottomCFrame.Position - r.Position).Magnitude < 80 then return false end
+					local top = ranked(h)
 					return top ~= nil and top.Uid ~= uid and better(top, cur)
 				end, SPEED_IDA, REACH)
 
