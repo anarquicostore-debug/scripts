@@ -7,6 +7,7 @@ local P = Players.LocalPlayer
 local N = RS.Packages.Networking
 local Snapshot, Carry = N["RF/EggWorld/AskFieldEggSnapshot"], N["RF/EggWorld/AskFieldEggCarry"]
 local PlotState = require(RS.Client.PlotState)
+local Assets = require(RS.Data.Assets).Directory
 
 getgenv().AutoFieldEggs = true
 local WANT = {} -- AssetCategory que quer pegar (vazio = qualquer um)
@@ -102,6 +103,23 @@ local function wanted(e)
 	return #WANT == 0 or table.find(WANT, e.AssetCategory) ~= nil
 end
 
+-- "melhor" = mais dinheiro/s; empate -> raridade, mutações, tamanho
+local function score(e)
+	local cfg = Assets[e.AssetCategory]
+	local earn = cfg and cfg.EarningRate or 0
+	local rank = cfg and cfg.Rarity and cfg.Rarity.Rank or 0
+	return earn, rank, #(e.Mutations or {}), e.AssetScale or 0
+end
+
+local function better(a, b)
+	local a1, a2, a3, a4 = score(a)
+	local b1, b2, b3, b4 = score(b)
+	if a1 ~= b1 then return a1 > b1 end
+	if a2 ~= b2 then return a2 > b2 end
+	if a3 ~= b3 then return a3 > b3 end
+	return a4 > b4
+end
+
 local function waitFor(cond, t)
 	local limit = os.clock() + t
 	while not cond() and os.clock() < limit do task.wait(0.1) end
@@ -113,11 +131,10 @@ while getgenv().AutoFieldEggs do
 	local plot = PlotState.ResolvePlot()
 	local ok, snap = pcall(Snapshot.InvokeServer, Snapshot)
 	if hrp and plot and ok and snap then
-		-- egg mais perto primeiro
-		local best, bestDist
+		-- melhor egg do mapa
+		local best
 		for _, e in ipairs(snap.Records) do
-			local d = (e.BottomCFrame.Position - hrp.Position).Magnitude
-			if wanted(e) and (not bestDist or d < bestDist) then best, bestDist = e, d end
+			if wanted(e) and (not best or better(e, best)) then best = e end
 		end
 
 		if best then
