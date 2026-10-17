@@ -1,5 +1,5 @@
 -- Steal An Egg - Auto pegar eggs do campo (fly)
--- Voa até o egg mais perto -> AskFieldEggCarry -> voa até a base -> servidor entrega o egg.
+-- Voa até o melhor egg do mapa -> AskFieldEggCarry -> voa até a base -> servidor entrega o egg.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS = game:GetService("ReplicatedStorage")
@@ -150,6 +150,8 @@ while getgenv().AutoFieldEggs do
 				else
 					skip[best.Uid] = os.clock() + 15 -- recusado: tenta outro egg e volta nesse depois
 				end
+			else
+				skip[best.Uid] = os.clock() + 15 -- não conseguiu chegar: não fica preso nesse egg
 			end
 		end
 	end
