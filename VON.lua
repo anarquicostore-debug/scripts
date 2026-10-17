@@ -2342,7 +2342,7 @@ end
 
 -- ══ INICIA ════════════════════════════════════════════════════
 fn48()
-tbl21.Collect and tbl21.Collect()
+if tbl21.Collect then tbl21.Collect() end
 tbl22.Ready = true
 
 fn36()
