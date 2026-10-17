@@ -32,15 +32,17 @@ local GuardsData = try(function() return require(RS.Data.Guards).Directory end)
 
 getgenv().AutoFieldEggs = true
 local WANT = {} -- AssetCategory que quer pegar (vazio = qualquer um)
-local SPEED_IDA = 2.5 -- velocidade indo pro egg = sua WalkSpeed x isso
-local SPEED_VOLTA = 1.5 -- velocidade MÍNIMA voltando com o egg (sobe sozinha o quanto precisar pra fugir do guarda)
-local MAX_MULT = 10 -- limite do multiplicador da volta (egg que precisaria de mais que isso é ignorado)
-local SAFE_MARGIN = 1.3 -- corre 30% mais rápido que o mínimo pra fugir do guarda
+-- velocidades em studs/s (não depende da sua velocidade no jogo; 16 = andar normal do Roblox)
+local SPEED_IDA = 120 -- indo pro egg (o guarda está dormindo, pode ir rápido)
+local SPEED_FUGA = 90 -- MÍNIMO fugindo do guarda com o egg (sobe sozinho o quanto precisar)
+local SPEED_VOLTA = 90 -- depois de sair da área do guarda até a base
+local MAX_SPEED = 350 -- limite: egg que precisaria de mais que isso pra fugir é ignorado
+local SAFE_MARGIN = 1.5 -- foge 50% mais rápido que o mínimo calculado
 local REACH = 4 -- distância (studs) pra considerar que chegou no egg
 local GUARD_AVOID = 28 -- desvia de guarda acordado que estiver mais perto que isso
 
 ---------------------------------------------------------------- lista do servidor
-local field, carrying, carryMult, skip = {}, false, 0.67, {} -- field[uid] = record
+local field, carrying, skip = {}, false, {} -- field[uid] = record
 
 local function adopt(list)
 	for _, e in ipairs(list) do field[e.Uid] = e end
@@ -51,12 +53,7 @@ N["RE/EggWorld/FieldEggBatchShifted"].OnClientEvent:Connect(function(b)
 	for _, uid in ipairs(b.RemovedUids) do field[uid] = nil end
 	adopt(b.UpdatedRecords)
 end)
-N["RE/EggWorld/FieldEggCarry"].OnClientEvent:Connect(function(s)
-	carrying = s.IsCarrying
-	if s.IsCarrying and type(s.SpeedMultiplier) == "number" and s.SpeedMultiplier > 0 then
-		carryMult = math.min(s.SpeedMultiplier, 1) -- slow de carregar egg
-	end
-end)
+N["RE/EggWorld/FieldEggCarry"].OnClientEvent:Connect(function(s) carrying = s.IsCarrying end)
 
 local function resync()
 	local ok, snap = pcall(Snapshot.InvokeServer, Snapshot)
@@ -73,20 +70,16 @@ local function char()
 	if hrp and hum and hum.Health > 0 then return c, hrp, hum end
 end
 
--- O jogo controla a WalkSpeed (WalkSpeedGovernor). A gente multiplica por cima e devolve no final.
+-- O jogo controla a WalkSpeed (WalkSpeedGovernor). A gente sobrescreve enquanto anda e devolve no final.
 local gameSpeed, ourSpeed = 16, nil
-local function setSpeed(hum, mult)
+local function setSpeed(hum, speed)
 	if not ourSpeed or math.abs(hum.WalkSpeed - ourSpeed) > 0.01 then gameSpeed = hum.WalkSpeed end
-	ourSpeed = gameSpeed * mult
+	ourSpeed = speed
 	hum.WalkSpeed = ourSpeed
 end
 local function restoreSpeed(hum)
 	if ourSpeed and math.abs(hum.WalkSpeed - ourSpeed) <= 0.01 then hum.WalkSpeed = gameSpeed end
 	ourSpeed = nil
-end
-local function baseSpeed(hum) -- WalkSpeed real do jogo (sem o nosso multiplicador)
-	if ourSpeed and math.abs(hum.WalkSpeed - ourSpeed) <= 0.01 then return gameSpeed end
-	return hum.WalkSpeed
 end
 
 -- desliga o controle do teclado/analógico enquanto o script anda (senão ele briga com o hum:Move)
@@ -226,14 +219,14 @@ local function escapeNeed(e)
 	return need
 end
 
--- multiplicador da volta pra esse egg: o necessário pra fugir (com folga), nunca menos que SPEED_VOLTA
-local function returnMult(need, carrySpeed)
-	return math.max(SPEED_VOLTA, need * SAFE_MARGIN / math.max(carrySpeed, 1))
+-- velocidade de fuga pra esse egg: o necessário (com folga), nunca menos que SPEED_FUGA
+local function fleeSpeed(need)
+	return math.max(SPEED_FUGA, need * SAFE_MARGIN)
 end
 
--- dá pra fugir desse egg sem passar do MAX_MULT?
-local function canEscape(e, hum)
-	return returnMult(escapeNeed(e), baseSpeed(hum) * carryMult) <= MAX_MULT
+-- dá pra fugir desse egg sem passar do MAX_SPEED?
+local function canEscape(e)
+	return fleeSpeed(escapeNeed(e)) <= MAX_SPEED
 end
 
 ---------------------------------------------------------------- escolha do egg
@@ -267,7 +260,7 @@ local function ranked(hum)
 	table.sort(list, better)
 	-- o melhor que dá pra fugir do guarda
 	for _, e in ipairs(list) do
-		if canEscape(e, hum) then return e end
+		if canEscape(e) then return e end
 	end
 end
 
@@ -372,7 +365,7 @@ end
 -- desvio local de obstáculos, pulo em degraus, foge de guarda e recalcula se travar.
 -- opts.straight = true: ignora o Pathfinding e vai reto na direção de getTarget (fuga do guarda).
 -- retorna true = chegou, false = abortou/falhou
-local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
+local function walkTo(getTarget, shouldAbort, speed, reach, opts)
 	opts = opts or {}
 	local c, hrp, hum = char()
 	if not c then return false end
@@ -382,7 +375,7 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 
 	local params = rayParams()
 	local target = getTarget()
-	local timeout = (target - hrp.Position).Magnitude / math.max(baseSpeed(hum) * speedMult, 8) * 3 + 15
+	local timeout = (target - hrp.Position).Magnitude / math.max(speed, 8) * 3 + 15
 	local start = os.clock()
 	local wps, i = nil, 1
 	local side, prevDir = 1, nil
@@ -469,7 +462,6 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 			end
 		end
 
-		local speed = baseSpeed(hum) * speedMult
 		local wp = wps[i]
 		local to = flat(wp.Position - pos)
 		-- passa pro próximo waypoint quando chega perto OU quando já passou dele
@@ -503,11 +495,11 @@ local function walkTo(getTarget, shouldAbort, speedMult, reach, opts)
 		if (wp.Jump or jump) and hum.FloorMaterial ~= Enum.Material.Air then hum.Jump = true end
 
 		-- chegando no destino final freia, pra não passar do ponto e ter que voltar
-		local mult = speedMult
-		if i == #wps and not opts.straight and to.Magnitude < speed * 0.4 then
-			mult = math.max(1, speedMult * to.Magnitude / (speed * 0.4))
+		local now = speed
+		if i == #wps and not opts.straight and to.Magnitude < speed * 0.3 then
+			now = math.max(16, speed * to.Magnitude / (speed * 0.3))
 		end
-		setSpeed(hum, mult)
+		setSpeed(hum, now)
 		hum:Move(dir, false)
 
 		-- travou? pula; travou várias vezes? recalcula o caminho
@@ -556,13 +548,14 @@ end
 
 -- volta com o egg: 1) foge RETO pra fora da área do guarda na velocidade necessária,
 -- 2) vai pra base desviando das paredes
-local function goHome(plot, area, need, speedBefore)
+local function goHome(plot, area, need)
 	local _, hrp, hum = char()
 	local dir = exitDir()
 	if hrp and dir and area and area:FindFirstChild("Bounds") then
-		-- velocidade carregando: a do jogo agora, ou a de antes x slow do egg se o jogo ainda não aplicou
-		local carrySpeed = math.min(baseSpeed(hum), (speedBefore or math.huge) * carryMult)
-		local mult = math.min(returnMult(need or 0, carrySpeed), MAX_MULT)
+		local speed = math.min(fleeSpeed(need or 0), MAX_SPEED)
+		-- já sai correndo neste frame (o guarda acorda em ~0.6s, não dá pra perder tempo preparando)
+		setSpeed(hum, speed)
+		hum:Move(dir, false)
 		local bounds = area.Bounds
 		walkTo(function()
 			local _, r = char()
@@ -570,7 +563,7 @@ local function goHome(plot, area, need, speedBefore)
 		end, function()
 			local _, r = char()
 			return not carrying or not r or not inFootprint(bounds, r.Position, 6) -- saiu da área: fase 2
-		end, mult, 0, { straight = true })
+		end, speed, 0, { straight = true })
 	end
 	if carrying then
 		walkTo(function() return plot.CenterPoint.Position end, function() return not carrying end, SPEED_VOLTA, 5)
@@ -591,7 +584,7 @@ while getgenv().AutoFieldEggs do
 
 		if hrp and plot and carrying then
 			-- ainda com egg na mão (ex.: script reiniciado): leva pra base
-			goHome(plot, areaAt(hrp.Position), math.huge) -- não sabe o egg: foge no MAX_MULT
+			goHome(plot, areaAt(hrp.Position), math.huge) -- não sabe o egg: foge no MAX_SPEED
 		elseif hrp and plot then
 			local best = ranked(hum)
 			if best then
@@ -618,10 +611,10 @@ while getgenv().AutoFieldEggs do
 					local area = areaAt(cur.BottomCFrame.Position)
 					needCache[uid] = nil
 					local need = escapeNeed(cur) -- com o guarda onde ele está agora
-					local speedBefore = baseSpeed(hum)
 					local s, got = pcall(Carry.InvokeServer, Carry, { Uid = uid, FirstAreaSlotKey = slotKey })
-					if s and got == true and waitFor(function() return carrying end, 2) then
-						goHome(plot, area, need, speedBefore)
+					if s and got == true then
+						carrying = true -- não espera o evento FieldEggCarry chegar: foge na hora
+						goHome(plot, area, need)
 					else
 						skip[uid] = os.clock() + 15 -- recusado: vai no próximo da lista
 					end
