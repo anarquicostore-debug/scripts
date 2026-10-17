@@ -50,8 +50,8 @@ while getgenv().AutoPlace do
 			local spot = freeSpot(plot, taken)
 			if not spot then break end -- base cheia
 			pcall(Wear.InvokeServer, Wear, uid)
-			local s, ok = pcall(Place.InvokeServer, Place, { Uid = uid, LocalCFrame = spot })
-			if s and ok == true then table.insert(taken, spot.Position) end
+			pcall(Place.InvokeServer, Place, { Uid = uid, LocalCFrame = spot })
+			table.insert(taken, spot.Position) -- deu certo ou não, o próximo egg tenta outro ponto
 			task.wait(0.3)
 		end
 	end
