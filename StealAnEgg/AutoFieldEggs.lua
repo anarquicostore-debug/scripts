@@ -90,8 +90,13 @@ local function rayParams()
 	return params
 end
 
-local function blocked(pos, dir, len, params)
-	return workspace:Raycast(pos, dir * len, params) ~= nil
+-- raycast que ignora tudo que está preso ao personagem (ex: o egg carregado, que não fica dentro do Character)
+local function cast(hrp, origin, vec, params)
+	for _ = 1, 6 do
+		local hit = workspace:Raycast(origin, vec, params)
+		if not hit or hit.Instance.AssemblyRootPart ~= hrp.AssemblyRootPart then return hit end
+		params:AddToFilter(hit.Instance)
+	end
 end
 
 -- Anda flutuando rente ao chão (WalkSpeed x SPEED_MULT): segue o relevo,
@@ -116,6 +121,7 @@ local function moveTo(getTarget, shouldAbort)
 	local result, start = nil, os.clock()
 	local timeout = (getTarget() - hrp.Position).Magnitude / math.max(hum.WalkSpeed * SPEED_MULT, 8) * 2 + 10
 	local side = 1
+	local bestDist, lastProgress, detourUntil, extraClimb = math.huge, os.clock(), 0, 0
 
 	while result == nil do
 		RunService.Heartbeat:Wait()
@@ -139,20 +145,32 @@ local function moveTo(getTarget, shouldAbort)
 
 		local speed = hum.WalkSpeed * SPEED_MULT -- acompanha o slow de carregar egg
 		local dir = flat.Unit
-		local groundHit = workspace:Raycast(pos, Vector3.new(0, -60, 0), params)
+		local right = Vector3.new(-dir.Z, 0, dir.X)
+		local groundHit = cast(hrp, pos, Vector3.new(0, -60, 0), params)
 		local groundY = groundHit and groundHit.Position.Y or (target.Y - HOVER)
 		local height = pos.Y - groundY
 
+		-- travou (não chega mais perto há 1.5s): troca de lado, desvia um pouco e libera subir mais
+		local now = os.clock()
+		if dist < bestDist - 1 then
+			bestDist, lastProgress = dist, now
+		elseif now - lastProgress > 1.5 then
+			side, lastProgress, detourUntil = -side, now, now + 0.8
+			extraClimb = math.min(extraClimb + 8, 30)
+		end
+
 		local look = math.min(dist, 6)
 		local move, wantHeight = dir, HOVER
-		if blocked(pos, dir, look, params) then
-			if height < MAX_CLIMB then
+		if now < detourUntil then
+			move = (right * side - dir * 0.3).Unit -- se afasta da parede pelo outro lado
+			wantHeight = height + 4
+		elseif cast(hrp, pos, dir * look, params) then
+			if height < MAX_CLIMB + extraClimb then
 				wantHeight = height + 6 -- tenta passar por cima
 				move = dir * 0.2
 			else
 				-- alto demais e ainda bloqueado: contorna pelo lado livre
-				local right = Vector3.new(-dir.Z, 0, dir.X)
-				if blocked(pos, right * side, 6, params) then side = -side end
+				if cast(hrp, pos, right * side * 6, params) then side = -side end
 				move = (right * side + dir * 0.3).Unit
 				wantHeight = height
 			end
