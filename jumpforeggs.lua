@@ -16,7 +16,7 @@ if not LPH_OBFUSCATED then
     end
     LPH_ATTRIBUTES = function(...) end
     LPH_PRECHECK = function(fn, expected) end
-    -- VM/PRESET aparecem dentro de LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG)); fora
+    -- VM/PRESET aparecem dentro de LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE)); fora
     -- do Luraph precisam existir pra chamada não dar "attempt to call a nil value".
     VM = function(...) end
     PRESET = function(...) end
@@ -29,7 +29,7 @@ local LPH_KEY = "a3f9c1e7b2d84f6091cde35a7b8012f4e9d6c3a1f8057b2e4d9a6c3f1082e5b
 -- "script"), devolve uma chave falsa e as funções protegidas não descriptografam.
 -- Fora do Luraph o retorno é ignorado (LPH_ENCFUNC só devolve a função).
 local function get_key()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
 
     if debug.info(1, "s") ~= "[string \"script\"]" then
         local chars = "0123456789abcdef"
@@ -109,7 +109,7 @@ end
 
 -- Única instância da classe entre os upvalues de fn.
 local onlyRemote = LPH_ENCFUNC(function(fn, class)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local ups = upvalues(fn)
     if not ups then return nil end
     local found
@@ -124,7 +124,7 @@ end, LPH_KEY, get_key())
 
 -- Nome exato dentro das pastas do Net (só GetChildren).
 local remoteByName = LPH_ENCFUNC(function(path, class)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local folders = {}
     local pk = ReplicatedStorage:FindFirstChild("Packages")
     if pk then
@@ -178,7 +178,7 @@ do
 end
 
 local resolve = LPH_ENCFUNC(function(label, fromFn, path, pick)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local r, how
     if fromFn then
         r = pick and pick(fromFn) or onlyRemote(fromFn, "RemoteEvent")
@@ -1102,7 +1102,7 @@ local function planRoute(start, goal, params)
     return r
 end
 planRouteOnce = LPH_ENCFUNC(function(start, goal, params)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     castCount = 0
     -- perto e na mesma altura: reto
     if (goal - start).Magnitude < 40 and math.abs(goal.Y - start.Y) < 6 and lineClear(start, goal, params) then
@@ -1156,7 +1156,7 @@ end, LPH_KEY, get_key())
 -- ponto ao lado, a coluna até a altura do destino. Andando de lado: testa
 -- direita/esquerda/cima/baixo do movimento. Devolve os pontos a inserir.
 local findDetour = LPH_ENCFUNC(function(pos, target, params)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local dir = target - pos
     if dir.Magnitude < 1 then return nil end
     dir = dir.Unit
@@ -1192,7 +1192,7 @@ end, LPH_KEY, get_key())
 
 -- motor -----------------------------------------------------------------------
 local makeMotor = LPH_ENCFUNC(function(hrp, hum)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local att = Instance.new("Attachment")
     att.Name = "V3ntFlyAtt"
     att.Parent = hrp
@@ -1287,7 +1287,7 @@ local landing = false
 -- Devolve: chegou (bool), motivo ("ok", "lost", "stuck", "timeout", "nochar",
 -- "cancel", "replace", "error").
 Fly.travel = LPH_ENCFUNC(function(getTarget, opts)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     opts = opts or {}
     Fly.cancel("replace")
     Fly.release()
@@ -1417,7 +1417,7 @@ end, LPH_KEY, get_key())
 
 -- Se estiver no ar sem chão perto, pousa na ilha mais próxima (ou no plot).
 Fly.landSafe = LPH_ENCFUNC(function()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if landing or Fly.current then return end
     local _, hrp, hum = getChar()
     if not hrp then return end
@@ -1589,7 +1589,7 @@ local function readOverhead(model)
 end
 
 local collectEggs = LPH_ENCFUNC(function()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local list = {}
     -- Ovos colocados nos plots
     for _, m in ipairs(CollectionService:GetTagged("BasePlotEggVisual")) do
@@ -1636,7 +1636,7 @@ end, LPH_KEY, get_key())
 
 -- ─── Texto de info ───────────────────────────────────────────────────────────
 local eggInfo = LPH_ENCFUNC(function(e, hrp)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local a = type(e.index) == "string" and AnimalsData[e.index] or nil
     local name = a and a.DisplayName or e.index or T("Ovo")
     local rarity = a and a.Rarity or (e.overhead and e.overhead.rarity)
@@ -1732,7 +1732,7 @@ espFolder.Name = "EggESP"
 espFolder.Parent = sg
 
 local makeEsp = LPH_ENCFUNC(function(e)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local hl = Instance.new("Highlight")
     hl.Adornee = e.model
     hl.FillTransparency = 0.6
@@ -1876,7 +1876,7 @@ end
 
 -- Cópia visual do model pro preview 3D (sem scripts, prompts, GUIs).
 local cloneForPreview = LPH_ENCFUNC(function(model)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local oldArch = model.Archivable
     model.Archivable = true
     local ok, c = pcall(function() return model:Clone() end)
@@ -2001,7 +2001,7 @@ end
 
 -- Devolve true, ou false + motivo: "notcarrying", "noremote", "nospot", "rejected"
 local placeEgg = LPH_ENCFUNC(function(tag)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if LP:GetAttribute("CarryingJumpEgg") ~= true then return false, "notcarrying" end
     if not eggRemote then return false, "noremote" end
     local spots = placeSpots()
@@ -2042,7 +2042,7 @@ local function cancelJob()
 end
 
 local startEggJob = LPH_ENCFUNC(function(e, ui, mode)
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     if currentJob then
         local same = currentJob.ui == ui and currentJob.mode == mode
         cancelJob()
@@ -2829,7 +2829,7 @@ end
 local function plain(t) return (tostring(t or ""):gsub("<[^>]->", "")) end
 
 local readTrampoline = LPH_ENCFUNC(function()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     local info = {}
     local pg = LP:FindFirstChild("PlayerGui")
     local sign = pg and pg:FindFirstChild("TrampolineSignGui")
@@ -2911,7 +2911,7 @@ local function trampolineText(info)
 end
 
 task.spawn(LPH_ENCFUNC(function()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     while alive do
         local ok, err = pcall(function()
             local info = readTrampoline()
@@ -2939,7 +2939,7 @@ end, LPH_KEY, get_key()))
 -- ═══ AUTO COLOCAR OVO / BRAINROT ═════════════════════════════════════════════
 local autoPlaceWarnAt = 0
 task.spawn(LPH_ENCFUNC(function()
-    LPH_ATTRIBUTES(VM(ONYX), PRESET(STRONG))
+    LPH_ATTRIBUTES(VM(ONYX), PRESET(SECURE))
     while alive do
         task.wait(1)
         pcall(function()
