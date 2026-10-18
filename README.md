@@ -7,7 +7,8 @@
 
 ## PlaceSaver
 
-- `Mode = "auto"` usa o `saveinstance()` do executor quando existe (resultado mais completo) e cai no salvador embutido em Lua puro se não existir ou falhar.
+- `Mode = "builtin"` (padrão) usa o salvador embutido em Lua puro.
+- `Mode = "auto"` usa o `saveinstance()` do executor quando existe e cai no embutido se falhar. Em alguns executores esse arquivo dá "Invalid NetAsset type" no Studio.
 - No modo embutido não dá para salvar Terrain, e Unions/alguns MeshParts podem vir incompletos (o cliente não expõe esses dados).
 - Scripts de servidor não existem no cliente: aparecem só com um comentário.
 - Para abrir: copie o `.rbxlx` para o PC e abra com **Arquivo > Abrir** no Roblox Studio (ou dois cliques).

@@ -7,12 +7,12 @@
 	    <NomeDoJogo> (<PlaceId>).rbxlx   -> pasta "workspace" do executor
 
 	Modos:
-	  "auto"    -> usa o saveinstance() do executor se existir (mais completo:
-	               salva unions, terreno e meshes certinho); se falhar, usa o
-	               salvador embutido deste script
+	  "builtin" -> (padrão) salvador embutido em Lua puro, funciona em qualquer
+	               executor com writefile + decompile
+	  "auto"    -> usa o saveinstance() do executor se existir; se falhar, usa
+	               o embutido. Em alguns executores o arquivo dá
+	               "Invalid NetAsset type" no Studio
 	  "native"  -> só o saveinstance() do executor
-	  "builtin" -> só o salvador embutido (Lua puro, funciona em qualquer
-	               executor com writefile + decompile)
 
 	Limitações do modo embutido: Terrain não é salvo, Unions podem aparecer
 	vazias e alguns MeshParts podem ficar com tamanho errado (dados que o
@@ -24,7 +24,9 @@ local CONFIG = {
 	-- Nome do arquivo (vazio = "<NomeDoJogo> (<PlaceId>)")
 	FileName = "",
 
-	Mode = "auto", -- "auto" | "native" | "builtin"
+	-- "builtin" é o padrão: o saveinstance() de alguns executores grava NetAssets
+	-- que o Studio atual recusa ("Invalid NetAsset type")
+	Mode = "builtin", -- "builtin" | "auto" | "native"
 
 	-- Serviços salvos (modo embutido)
 	Services = {
@@ -146,7 +148,7 @@ end
 if CONFIG.Mode ~= "builtin" then
 	local ok, err = tryNative()
 	if ok then
-		notify("Pronto! Salvo como " .. FILE_NAME .. " (.rbxlx / .rbxl)")
+		notify("Pronto (saveinstance do executor)! Salvo como " .. FILE_NAME .. " (.rbxlx / .rbxl)")
 		return
 	end
 	if CONFIG.Mode == "native" then
@@ -1002,5 +1004,5 @@ if not okWrite then
 	return
 end
 
-notify(("Pronto! %s salvo (%d instâncias, %d scripts ok, %d falharam, %.1fs)"):format(
+notify(("Pronto (modo embutido)! %s salvo (%d instâncias, %d scripts ok, %d falharam, %.1fs)"):format(
 	fileName, written, okCount, failCount, os.clock() - startTime))
