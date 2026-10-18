@@ -45,7 +45,9 @@ local CONFIG = {
 	DecompileScripts = true, -- false = salva scripts vazios (bem mais rápido)
 	DecompileTimeout = 10, -- segundos por script
 
-	RemovePlayerCharacters = true, -- não salva os bonecos dos jogadores
+	-- Não salva bonecos dos jogadores nem nada com o nome/UserId deles
+	-- (cadáveres, pastas por jogador, itens da lista de jogadores na GUI, etc.)
+	RemovePlayerCharacters = true,
 	SkipCoreScripts = true, -- ignora PlayerModule, ChatScript, etc.
 	IncludePlayerGui = true, -- GUIs que só existem no PlayerGui vão pro StarterGui
 	IncludePlayerScripts = true, -- scripts do PlayerScripts vão pro StarterPlayerScripts
@@ -734,6 +736,10 @@ end
 ---------------------------------------------------------------------------
 -- Coleta da árvore
 ---------------------------------------------------------------------------
+if CONFIG.DecompileScripts and not decompile then
+	warn("[PlaceSaver] Este executor não tem decompile(): os scripts vão sair vazios")
+end
+
 notify("Coletando instâncias...")
 
 local savedSet = {}
@@ -759,6 +765,12 @@ local function hasCoreAncestor(inst)
 	return false
 end
 
+local PLAYER_NAMES = {}
+for _, player in ipairs(Players:GetPlayers()) do
+	PLAYER_NAMES[player.Name] = true
+	PLAYER_NAMES[tostring(player.UserId)] = true
+end
+
 local function shouldSkip(inst)
 	if SKIP_CLASSES[inst.ClassName] then
 		return true
@@ -767,8 +779,13 @@ local function shouldSkip(inst)
 		and (inst:IsA("LuaSourceContainer") or inst:IsA("LayerCollector")) then
 		return true
 	end
-	if CONFIG.RemovePlayerCharacters and inst:IsA("Model") and Players:GetPlayerFromCharacter(inst) then
-		return true
+	if CONFIG.RemovePlayerCharacters then
+		if PLAYER_NAMES[inst.Name] then
+			return true
+		end
+		if inst:IsA("Model") and Players:GetPlayerFromCharacter(inst) then
+			return true
+		end
 	end
 	return false
 end
