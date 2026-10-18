@@ -90,13 +90,30 @@ local function sanitize(name)
 	return name
 end
 
+-- Alguns executores gravam o nome do arquivo em Latin-1 ("MistÃ©rio"), então
+-- o nome fica só com ASCII
+local ACCENTS = {
+	["á"] = "a", ["à"] = "a", ["â"] = "a", ["ã"] = "a", ["ä"] = "a",
+	["é"] = "e", ["ê"] = "e", ["è"] = "e", ["í"] = "i", ["ó"] = "o",
+	["ô"] = "o", ["õ"] = "o", ["ö"] = "o", ["ú"] = "u", ["ü"] = "u", ["ç"] = "c", ["ñ"] = "n",
+	["Á"] = "A", ["À"] = "A", ["Â"] = "A", ["Ã"] = "A", ["É"] = "E", ["Ê"] = "E", ["Í"] = "I",
+	["Ó"] = "O", ["Ô"] = "O", ["Õ"] = "O", ["Ú"] = "U", ["Ç"] = "C", ["Ñ"] = "N",
+}
+local function asciiName(name)
+	for from, to in pairs(ACCENTS) do
+		name = name:gsub(from, to)
+	end
+	name = name:gsub("[\128-\255]", ""):gsub("%s+", " ")
+	return sanitize(name)
+end
+
 local gameName = "Game"
 pcall(function()
 	gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
 end)
 
 local FILE_NAME = CONFIG.FileName ~= "" and CONFIG.FileName
-	or ("%s (%d)"):format(sanitize(gameName), game.PlaceId)
+	or ("%s (%d)"):format(asciiName(gameName), game.PlaceId)
 
 ---------------------------------------------------------------------------
 -- Modo nativo (saveinstance do executor)
@@ -184,8 +201,9 @@ local PROPS = {
 		"!InitialSize",
 	} },
 	{ "PartOperation", {
-		"UsePartColor", "RenderFidelity", "CollisionFidelity", "SmoothingAngle",
-		"!AssetId:Content", "!InitialSize",
+		-- AssetId das Unions é um NetAsset binário no Studio novo; gravar como texto
+		-- faz o arquivo falhar com "Invalid NetAsset type"
+		"UsePartColor", "RenderFidelity", "CollisionFidelity", "SmoothingAngle", "!InitialSize",
 	} },
 	{ "SpawnLocation", { "Neutral", "TeamColor", "Duration:int", "AllowTeamChangeOnTouch", "Enabled" } },
 	{ "Seat", { "Disabled" } },
@@ -457,8 +475,33 @@ local function stripControl(s)
 	end))
 end
 
+-- O XML precisa ser UTF-8 válido; bytes soltos viram replace(byte)
+local function fixUtf8(s, replace)
+	local parts = {}
+	while true do
+		local len, bad = utf8.len(s)
+		if len then
+			table.insert(parts, s)
+			break
+		end
+		table.insert(parts, s:sub(1, bad - 1))
+		table.insert(parts, replace(s:byte(bad)))
+		s = s:sub(bad + 1)
+	end
+	return table.concat(parts)
+end
+
+local function questionMark()
+	return "?"
+end
+
+-- Em código Lua, "\xFF" escrito por extenso mantém o mesmo byte dentro de strings
+local function hexEscape(b)
+	return string.format("\\x%02X", b)
+end
+
 local function esc(s)
-	return (stripControl(tostring(s)):gsub("[&<>\"']", ESCAPES))
+	return (fixUtf8(stripControl(tostring(s)), questionMark):gsub("[&<>\"']", ESCAPES))
 end
 
 local function num(n, precise)
@@ -916,7 +959,7 @@ local function writeItem(node)
 		end
 
 		if node:IsA("LuaSourceContainer") then
-			local src = stripControl(sources[node] or ""):gsub("]]>", "]]]]><![CDATA[>")
+			local src = fixUtf8(stripControl(sources[node] or ""), hexEscape):gsub("]]>", "]]]]><![CDATA[>")
 			push('<ProtectedString name="Source"><![CDATA[' .. src .. "]]></ProtectedString>")
 		end
 
