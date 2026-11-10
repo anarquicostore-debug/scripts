@@ -1,18 +1,27 @@
--- Remove no cliente todas as remotes de trade (TradeService/* e TradePlaza*)
-local RS, T = game:GetService("ReplicatedStorage"), "TradeService/"
-local function kill(r)
-	if typeof(r) == "Instance" and (r:IsA("BaseRemoteEvent") or r:IsA("RemoteFunction")) then pcall(r.Destroy, r) end
-end
-local function check(r) if r.Name:find("^Trade") then kill(r) end end
-local ok, Net = pcall(function() return require(RS.Packages.Net) end)
-for method, names in pairs({
-	RemoteEvent = "CreateInvite DeclineInvite InviteResult Accept Ready CancelTrade TradeCompleted SendChatMessage HistoryUpdated",
-	RemoteFunction = "Invite AcceptInvite SearchUser AddBrainrot RemoveBrainrot AddItem RemoveItem GetTradeHistory",
-}) do
-	for name in names:gmatch("%S+") do
-		task.spawn(function() kill(ok and select(2, pcall(Net[method], Net, T .. name))) end)
+-- Remove no cliente as remotes de trade, achando-as nos upvalues dos controllers Trade* (sem nomes fixos)
+local RS = game:GetService("ReplicatedStorage")
+local getups = (debug and debug.getupvalues) or getupvalues
+local okNet, Net = pcall(require, RS.Packages.Net)
+-- o TradeController também guarda esta remote de configurações; ela não é de trade e fica preservada
+local keep = okNet and select(2, pcall(Net.RemoteFunction, Net, "SettingsService/ToggleSetting"))
+for _, module in ipairs(RS.Controllers:GetChildren()) do
+	if module.Name:find("^Trade") then
+		task.spawn(function()
+			local seen = {}
+			local function walk(fn)
+				if type(fn) ~= "function" or seen[fn] then return end
+				seen[fn] = true
+				local ok, ups = pcall(getups, fn)
+				for _, v in pairs(ok and ups or {}) do
+					if typeof(v) == "Instance" and v ~= keep and (v:IsA("BaseRemoteEvent") or v:IsA("RemoteFunction")) then
+						pcall(v.Destroy, v)
+					elseif type(v) == "function" and debug.info(v, "s") == debug.info(fn, "s") then
+						walk(v) -- só desce em funções do mesmo script, para não alcançar outros controllers
+					end
+				end
+			end
+			local ok, controller = pcall(require, module)
+			for _, fn in pairs(ok and type(controller) == "table" and controller or {}) do walk(fn) end
+		end)
 	end
 end
-for _, r in ipairs(RS:GetDescendants()) do check(r) end
-for _, r in ipairs(getnilinstances and getnilinstances() or {}) do check(r) end
-RS.DescendantAdded:Connect(check)
